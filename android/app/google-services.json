@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "901667678702",
+    "project_id": "rekeep-c8016",
+    "storage_bucket": "rekeep-c8016.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:901667678702:android:04cdf848728699bdfa46ff",
+        "android_client_info": {
+          "package_name": "com.example.flutter_rekeep"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCiGoA-8DLAD5KHqZOmdw6I6zUIe0vGHWc"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
