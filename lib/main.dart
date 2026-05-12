@@ -24,6 +24,9 @@ class RekeepApp extends StatelessWidget {
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: AppColors.primary),
         useMaterial3: true,
+        listTileTheme: const ListTileThemeData(
+          contentPadding: EdgeInsets.symmetric(horizontal: 24.0),
+        ),
         // 1. 전체 기본 폰트 지정 (pubspec.yaml에 등록된 이름)
       ),
       localizationsDelegates: const [
