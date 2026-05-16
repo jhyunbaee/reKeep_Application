@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'auth_service.dart'; // 방금 만든 파일을 불러옵니다.
 
 class SignUp extends StatefulWidget {
+  const SignUp({super.key});
+
   @override
   _SignUpState createState() => _SignUpState();
 }
