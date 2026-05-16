@@ -47,7 +47,7 @@ class BottomMenuBar extends StatelessWidget {
             size: 18,
             color: isSelected ? AppColors.primary : Colors.grey[400],
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 5),
           Text(
             label,
             style: TextStyle(
