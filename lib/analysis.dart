@@ -17,8 +17,69 @@ class _AnalysisState extends State<Analysis> {
   final NumberFormat nf = NumberFormat('#,###');
   DateTime _selectedMonth = DateTime.now();
 
+  // 💡 성능 보존 및 비동기 폭사 방지를 위해 예산 데이터를 한 번에 담아둘 맵
+  Map<String, int> _budgetMap = {};
+  bool _isBudgetLoading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadAllBudgets(); // 💡 위젯 진입 시 예산 데이터를 단 딱 한 번만 일괄 로드합니다.
+  }
+
+  // 💡 카테고리 내부에서 무한 FutureBuilder를 돌리는 대신, 이 함수로 전체 예산을 한방에 긁어옵니다.
+  Future<void> _loadAllBudgets() async {
+    if (userId == null) return;
+    try {
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('budgets')
+          .get();
+
+      final Map<String, int> tempBudgets = {};
+      for (var doc in snapshot.docs) {
+        tempBudgets[doc.id] = (doc.data()['amount'] ?? 0) as int;
+      }
+
+      if (mounted) {
+        setState(() {
+          _budgetMap = tempBudgets;
+          _isBudgetLoading = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isBudgetLoading = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final int currentYear = _selectedMonth.year;
+    final int currentMonth = _selectedMonth.month;
+
+    final int lastYear = currentMonth == 1 ? currentYear - 1 : currentYear;
+    final int lastMonth = currentMonth == 1 ? 12 : currentMonth - 1;
+
+    final int daysInCurrentMonth = DateTime(
+      currentYear,
+      currentMonth + 1,
+      0,
+    ).day;
+    final int daysInLastMonth = DateTime(lastYear, lastMonth + 1, 0).day;
+
+    // 예산 로딩 중일 때는 에뮬레이터 먹통 방지를 위해 인디케이터 표시
+    if (_isBudgetLoading) {
+      return const Scaffold(
+        backgroundColor: Colors.white,
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.primary),
+        ),
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -35,10 +96,8 @@ class _AnalysisState extends State<Analysis> {
             children: [
               GestureDetector(
                 onTap: () => setState(
-                  () => _selectedMonth = DateTime(
-                    _selectedMonth.year,
-                    _selectedMonth.month - 1,
-                  ),
+                  () =>
+                      _selectedMonth = DateTime(currentYear, currentMonth - 1),
                 ),
                 behavior: HitTestBehavior.opaque,
                 child: const Icon(
@@ -48,7 +107,7 @@ class _AnalysisState extends State<Analysis> {
                 ),
               ),
               Text(
-                "${_selectedMonth.month}월",
+                "$currentMonth월",
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.black,
@@ -57,10 +116,8 @@ class _AnalysisState extends State<Analysis> {
               ),
               GestureDetector(
                 onTap: () => setState(
-                  () => _selectedMonth = DateTime(
-                    _selectedMonth.year,
-                    _selectedMonth.month + 1,
-                  ),
+                  () =>
+                      _selectedMonth = DateTime(currentYear, currentMonth + 1),
                 ),
                 behavior: HitTestBehavior.opaque,
                 child: const Icon(
@@ -80,113 +137,94 @@ class _AnalysisState extends State<Analysis> {
             .collection('records')
             .where(
               'date',
-              isGreaterThanOrEqualTo: DateTime(
-                _selectedMonth.year,
-                _selectedMonth.month - 1,
-                1,
-              ),
+              isGreaterThanOrEqualTo: DateTime(lastYear, lastMonth, 1),
             )
             .where(
               'date',
-              isLessThanOrEqualTo: DateTime(
-                _selectedMonth.year,
-                _selectedMonth.month + 1,
-                0,
-              ),
+              isLessThanOrEqualTo: DateTime(currentYear, currentMonth + 1, 0),
             )
             .snapshots(),
         builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting)
-            return const Center(child: CircularProgressIndicator());
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(
+              child: CircularProgressIndicator(color: AppColors.primary),
+            );
+          }
 
           Map<String, int> categoryTotals = {};
-          List<Map<String, dynamic>> expenses = [];
+          List<Map<String, dynamic>> currentMonthExpenses = [];
           int currentMonthTotal = 0;
           int lastMonthTotal = 0;
           Set<int> currentMonthExpenseDays = {};
 
+          List<int> dailyAmounts = List.generate(
+            daysInCurrentMonth + 1,
+            (_) => 0,
+          );
+          List<int> lastDailyAmounts = List.generate(
+            daysInLastMonth + 1,
+            (_) => 0,
+          );
+
           if (snapshot.hasData) {
             for (var doc in snapshot.data!.docs) {
               var data = doc.data() as Map<String, dynamic>;
+              if (data['date'] == null) continue;
+
               DateTime date = (data['date'] as Timestamp).toDate();
               int amount = (data['amount'] ?? 0) as int;
               String category = data['category']?.toString() ?? "기타";
               String type = data['type']?.toString() ?? "지출";
 
               if (type == '지출') {
-                if (date.month == _selectedMonth.month &&
-                    date.year == _selectedMonth.year) {
+                if (date.month == currentMonth && date.year == currentYear) {
                   currentMonthTotal += amount;
                   currentMonthExpenseDays.add(date.day);
-                  expenses.add(data);
+                  currentMonthExpenses.add(data);
                   categoryTotals[category] =
                       (categoryTotals[category] ?? 0) + amount;
-                } else if (date.month ==
-                    (_selectedMonth.month == 1
-                        ? 12
-                        : _selectedMonth.month - 1)) {
+
+                  if (date.day <= daysInCurrentMonth) {
+                    dailyAmounts[date.day] += amount;
+                  }
+                } else if (date.month == lastMonth && date.year == lastYear) {
                   lastMonthTotal += amount;
+                  if (date.day <= daysInLastMonth) {
+                    lastDailyAmounts[date.day] += amount;
+                  }
                 }
               }
             }
           }
 
-          expenses.sort(
+          currentMonthExpenses.sort(
             (a, b) => (b['amount'] ?? 0).compareTo(a['amount'] ?? 0),
           );
-          var top3 = expenses.take(3).toList();
+          var top3 = currentMonthExpenses.take(3).toList();
           var sortedCategories = categoryTotals.entries.toList()
             ..sort((a, b) => b.value.compareTo(a.value));
 
-          int daysInMonth = DateTime(
-            _selectedMonth.year,
-            _selectedMonth.month + 1,
-            0,
-          ).day;
-          int noExpenseDays = daysInMonth - currentMonthExpenseDays.length;
+          int noExpenseDays =
+              daysInCurrentMonth - currentMonthExpenseDays.length;
 
           bool isCurrentMonth =
-              (_selectedMonth.month == DateTime.now().month &&
-              _selectedMonth.year == DateTime.now().year);
+              (currentMonth == DateTime.now().month &&
+              currentYear == DateTime.now().year);
           int lastDayForGraph = isCurrentMonth
               ? DateTime.now().day
-              : daysInMonth;
+              : daysInCurrentMonth;
 
           List<int> dailyCumulativeSum = [];
           int tempSum = 0;
           for (int d = 1; d <= lastDayForGraph; d++) {
-            int daySum = expenses
-                .where((e) => (e['date'] as Timestamp).toDate().day == d)
-                .fold(0, (prev, e) => prev + (e['amount'] as int));
-            tempSum += daySum;
+            tempSum += dailyAmounts[d];
             dailyCumulativeSum.add(tempSum);
           }
 
-          int lastMonthDays = DateTime(
-            _selectedMonth.year,
-            _selectedMonth.month,
-            0,
-          ).day;
           List<int> lastMonthCumulativeSum = [];
           int lastTempSum = 0;
-          for (int d = 1; d <= lastMonthDays; d++) {
-            int daySum = snapshot.data!.docs
-                .map((doc) => doc.data() as Map<String, dynamic>)
-                .where((data) {
-                  DateTime date = (data['date'] as Timestamp).toDate();
-                  int lm = _selectedMonth.month == 1
-                      ? 12
-                      : _selectedMonth.month - 1;
-                  int ly = _selectedMonth.month == 1
-                      ? _selectedMonth.year - 1
-                      : _selectedMonth.year;
-                  return data['type'] == '지출' &&
-                      date.day == d &&
-                      date.month == lm &&
-                      date.year == ly;
-                })
-                .fold(0, (prev, e) => prev + (e['amount'] as int));
-            lastTempSum += daySum;
+          for (int d = 1; d <= daysInLastMonth; d++) {
+            lastTempSum += lastDailyAmounts[d];
             lastMonthCumulativeSum.add(lastTempSum);
           }
 
@@ -194,7 +232,7 @@ class _AnalysisState extends State<Analysis> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const SizedBox(height: 10),
+                const SizedBox(height: 24),
                 _withPadding(_buildSectionTitle("지난달 대비 지출")),
                 _withPadding(
                   _buildCompareSection(
@@ -210,7 +248,7 @@ class _AnalysisState extends State<Analysis> {
                   _buildHabitSection(
                     noExpenseDays,
                     currentMonthTotal,
-                    daysInMonth,
+                    daysInCurrentMonth,
                   ),
                 ),
                 _buildFullDivider(),
@@ -219,7 +257,7 @@ class _AnalysisState extends State<Analysis> {
                   _buildCategoryAnalysis(sortedCategories, currentMonthTotal),
                 ),
                 _buildFullDivider(),
-                _withPadding(_buildSectionTitle("이번 달 지출 TOP 3")),
+                _withPadding(_buildSectionTitle("자산 설정")),
                 _withPadding(_buildTop3List(top3)),
                 const SizedBox(height: 40),
               ],
@@ -267,9 +305,9 @@ class _AnalysisState extends State<Analysis> {
         const SizedBox(height: 20),
         Text(
           current > last
-              ? "지난달보다 ${nf.format(current - last)}원 더 썼어요! 📈"
-              : "지난달보다 ${nf.format(last - current)}원 아꼈어요! ✨",
-          style: const TextStyle(fontWeight: FontWeight.bold),
+              ? "지난달보다 ${nf.format(current - last)}원 더 썼어요"
+              : "지난달보다 ${nf.format(last - current)}원 아꼈어요",
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
         ),
       ],
     );
@@ -291,20 +329,22 @@ class _AnalysisState extends State<Analysis> {
     ],
   );
   Widget _buildSectionTitle(String title) => Padding(
-    padding: const EdgeInsets.only(bottom: 12.0),
+    padding: const EdgeInsets.only(bottom: 20),
     child: Text(
       title,
       style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
     ),
   );
+
   Widget _chartLegend(String label, Color color) => Row(
     children: [
-      Container(width: 12, height: 2, color: color),
-      const SizedBox(width: 6),
+      Container(width: 10, height: 2, color: color),
+      const SizedBox(width: 5),
       Text(label, style: const TextStyle(fontSize: 12, color: AppColors.grey)),
     ],
   );
 
+  // 소비 습관
   Widget _buildHabitSection(int noExp, int total, int daysInMonth) {
     int div =
         (_selectedMonth.month == DateTime.now().month &&
@@ -321,9 +361,10 @@ class _AnalysisState extends State<Analysis> {
     );
   }
 
+  // 소비 습관
   Widget _habitBox(String t, String v, String s) => Expanded(
     child: Container(
-      padding: const EdgeInsets.all(16),
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
@@ -333,23 +374,24 @@ class _AnalysisState extends State<Analysis> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(t, style: const TextStyle(fontSize: 12, color: Colors.black)),
-          const SizedBox(height: 8),
           Text(
             v,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 4),
           Text(
             s,
-            style: const TextStyle(fontSize: 10, color: AppColors.secondary),
+            style: const TextStyle(fontSize: 12, color: AppColors.secondary),
           ),
         ],
       ),
     ),
   );
 
+  // 카테고리별 지출
   Widget _buildCategoryAnalysis(List<MapEntry<String, int>> cats, int tot) {
     if (cats.isEmpty) return const Center(child: Text("데이터가 없습니다."));
+
     return Column(
       children: [
         SizedBox(
@@ -361,8 +403,8 @@ class _AnalysisState extends State<Analysis> {
         ),
         const SizedBox(height: 25),
         ...cats.take(4).map((e) {
-          double p = (e.value / tot) * 100;
-          // 💡 카테고리 이름 추출 로직 개선
+          double p = tot > 0 ? (e.value / tot) * 100 : 0;
+
           String categoryName = e.key;
           if (categoryName.contains('name:')) {
             categoryName =
@@ -371,9 +413,14 @@ class _AnalysisState extends State<Analysis> {
                 ).firstMatch(categoryName)?.group(1)?.trim() ??
                 categoryName;
           }
+
+          // initState 단계에서 미리 긁어온 _budgetMap을 즉시 메모리에서 조회(O(1))합니다.
+          int budgetAmount = _budgetMap[categoryName] ?? 0;
+
           return Padding(
-            padding: const EdgeInsets.only(bottom: 12.0),
+            padding: const EdgeInsets.only(bottom: 0),
             child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
               children: [
                 Container(
                   width: 8,
@@ -384,34 +431,65 @@ class _AnalysisState extends State<Analysis> {
                   ),
                 ),
                 const SizedBox(width: 10),
-                Text("$categoryName "),
-                Text(
-                  "${p.toStringAsFixed(0)}%",
-                  style: const TextStyle(
-                    color: AppColors.secondary,
-                    fontWeight: FontWeight.bold,
+
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Row(
+                        children: [
+                          Text(
+                            "$categoryName ",
+                            style: const TextStyle(fontSize: 15),
+                          ),
+                          Text(
+                            "${p.toStringAsFixed(0)}%",
+                            style: const TextStyle(
+                              color: AppColors.secondary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        budgetAmount > 0
+                            ? "예산 ${nf.format(budgetAmount)}원"
+                            : "예산 미설정",
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: Colors.grey.shade500,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const Spacer(),
+
                 Text(
                   "${nf.format(e.value)}원",
-                  style: const TextStyle(fontWeight: FontWeight.bold),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 15,
+                  ),
                 ),
               ],
             ),
           );
-        }).toList(),
+        }),
       ],
     );
   }
 
   Color _getCategoryColor(int i) {
     List<Color> cs = [
-      AppColors.primary,
-      const Color(0xFFFFA726),
-      const Color(0xFF26A69A),
-      const Color(0xFFAB47BC),
-      const Color(0xFFEF5350),
+      const Color(0xFFE57373),
+      const Color(0xFFF0AD4E),
+      const Color(0xFFF4D03F),
+      const Color(0xFF82E0AA),
+      const Color(0xFF5DADE2),
     ];
     return cs[i % cs.length];
   }
@@ -421,12 +499,10 @@ class _AnalysisState extends State<Analysis> {
     return Column(
       children: top3.asMap().entries.map((entry) {
         var data = entry.value;
-        // 💡 내역명 필드 체크 (place 또는 title)
         String title =
             data['place']?.toString() ?? data['title']?.toString() ?? "항목 없음";
         return Container(
-          margin: const EdgeInsets.only(bottom: 10),
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
@@ -439,20 +515,23 @@ class _AnalysisState extends State<Analysis> {
                 style: TextStyle(
                   fontWeight: FontWeight.bold,
                   color: AppColors.primary,
-                  fontSize: 18,
+                  fontSize: 16,
                 ),
               ),
-              const SizedBox(width: 16),
+              const SizedBox(width: 15),
               Expanded(
                 child: Text(
                   title,
-                  style: const TextStyle(fontWeight: FontWeight.w500),
                   overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 15),
                 ),
               ),
               Text(
                 "${nf.format(data['amount'] ?? 0)}원",
-                style: const TextStyle(fontWeight: FontWeight.bold),
+                style: const TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 15,
+                ),
               ),
             ],
           ),
@@ -496,7 +575,7 @@ class LineChartPainter extends CustomPainter {
       );
     }
     _drawT(canvas, "1일", Offset(lp, h + 5));
-    _drawT(canvas, "31일", Offset(size.width - 25, h + 5));
+    _drawT(canvas, "${days}일", Offset(size.width - 25, h + 5));
 
     _drawPath(
       canvas,
@@ -533,7 +612,8 @@ class LineChartPainter extends CustomPainter {
     final path = Path()..moveTo(lp, h);
     for (int i = 0; i < data.length; i++) {
       double x = lp + (dW * i);
-      double y = h - (data[i] / maxAmount * h).clamp(0.0, h);
+      double y =
+          h - (data[i] / (maxAmount == 0 ? 1 : maxAmount) * h).clamp(0.0, h);
       path.lineTo(x, y);
       if (i == data.length - 1) {
         canvas.drawCircle(Offset(x, y), sw + 1, Paint()..color = c);
@@ -572,7 +652,7 @@ class LineChartPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter old) => true;
+  bool shouldRepaint(covariant LineChartPainter old) => true;
 }
 
 class PieChartPainter extends CustomPainter {
@@ -582,6 +662,8 @@ class PieChartPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (total == 0 || categories.isEmpty) return;
+
     double startAngle = -1.5708;
     final rect = Rect.fromCircle(
       center: Offset(size.width / 2, size.height / 2),
@@ -622,5 +704,5 @@ class PieChartPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter old) => true;
+  bool shouldRepaint(covariant PieChartPainter old) => true;
 }
