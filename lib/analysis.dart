@@ -17,6 +17,9 @@ class _AnalysisState extends State<Analysis> {
   final NumberFormat nf = NumberFormat('#,###');
   DateTime _selectedMonth = DateTime.now();
 
+  List<Map<String, dynamic>> dailyData = [];
+  int fixedBudgetFromSetting = 0;
+
   // 💡 성능 보존 및 비동기 폭사 방지를 위해 예산 데이터를 한 번에 담아둘 맵
   Map<String, int> _budgetMap = {};
   bool _isBudgetLoading = true;
@@ -24,7 +27,19 @@ class _AnalysisState extends State<Analysis> {
   @override
   void initState() {
     super.initState();
-    _loadAllBudgets(); // 💡 위젯 진입 시 예산 데이터를 단 딱 한 번만 일괄 로드합니다.
+    _loadInitialData(); // 모든 데이터를 순차적으로 로드
+  }
+
+  Future<void> _loadInitialData() async {
+    // 1. 모든 예산 데이터를 먼저 다 가져옴
+    await _loadAllBudgets();
+    // 2. 그 다음에 고정지출 항목 리스트를 가져옴
+    await _getFixedItemsList();
+
+    // 3. 둘 다 완료된 후 최종 합계 계산 및 화면 갱신
+    setState(() {
+      _isBudgetLoading = false;
+    });
   }
 
   // 💡 카테고리 내부에서 무한 FutureBuilder를 돌리는 대신, 이 함수로 전체 예산을 한방에 긁어옵니다.
@@ -53,6 +68,67 @@ class _AnalysisState extends State<Analysis> {
         setState(() => _isBudgetLoading = false);
       }
     }
+  }
+
+  // 클래스 멤버 변수로 고정지출 합계 변수 추가
+  int fixedBudgetTotal = 0;
+
+  Future<void> _getFixedItemsList() async {
+    if (userId == null) return;
+
+    try {
+      // 1. 'settings' 컬렉션의 모든 문서를 다 가져와 봅니다.
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('settings')
+          .get();
+
+      print("--- [settings 컬렉션 내부 문서 리스트] ---");
+      for (var doc in snapshot.docs) {
+        print("문서 ID: ${doc.id}"); // 여기에 찍히는 ID가 진짜 이름입니다!
+      }
+      print("---------------------------------------");
+
+      // 2. 위에서 찍힌 ID 중 하나를 골라 아래에서 사용합니다.
+      // 예를 들어 문서 ID가 '고정지출_items'가 아니라 'fixed_items'라면 아래를 수정하세요.
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('settings')
+          .doc('여기에_위에_찍힌_ID를_넣으세요')
+          .get();
+
+      if (doc.exists) {
+        // ... 이후 로직
+      }
+    } catch (e) {
+      print("에러 발생: $e");
+    }
+  }
+
+  final List<String> _fixedItems = [
+    "관리비",
+    "통신비",
+    "주거비",
+    "인터넷비",
+    "연금",
+    "세금",
+    "구독료",
+    "자기계발",
+    "보험료",
+    "모임비",
+  ];
+
+  // 2. 고정지출 합계 계산 (이미 불러온 _budgetMap 활용)
+  int _getFixedBudgetTotal() {
+    int total = 0;
+    _budgetMap.forEach((key, value) {
+      if (_fixedItems.contains(key)) {
+        total += value;
+      }
+    });
+    return total;
   }
 
   @override
@@ -258,7 +334,7 @@ class _AnalysisState extends State<Analysis> {
                 ),
                 _buildFullDivider(),
                 _withPadding(_buildSectionTitle("자산 설정")),
-                _withPadding(_buildTop3List(top3)),
+                _withPadding(_buildAssetSetting()),
                 const SizedBox(height: 40),
               ],
             ),
@@ -280,22 +356,34 @@ class _AnalysisState extends State<Analysis> {
     return Column(
       children: [
         SizedBox(
-          height: 200,
+          height: 250,
           width: double.infinity,
-          child: CustomPaint(
-            painter: LineChartPainter(
-              lastMonthTotal: last,
-              currentMonthTotal: current,
-              maxAmount: maxVal,
-              dailyData: dailyData,
-              lastMonthData: lastData,
-              selectedMonth: _selectedMonth,
-            ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(left: 0, bottom: 5), // 텍스트는 왼쪽 끝에 붙음
+                child: Text(
+                  "(만원)",
+                  style: TextStyle(fontSize: 10, color: Colors.grey),
+                ),
+              ),
+              CustomPaint(
+                size: Size(double.infinity, 200),
+                painter: LineChartPainter(
+                  lastMonthTotal: last,
+                  currentMonthTotal: current,
+                  maxAmount: maxVal,
+                  dailyData: dailyData,
+                  lastMonthData: lastData,
+                  selectedMonth: _selectedMonth,
+                ),
+              ),
+            ],
           ),
         ),
-        const SizedBox(height: 20),
         Row(
-          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisAlignment: MainAxisAlignment.start,
           children: [
             _chartLegend("지난달", Colors.grey),
             const SizedBox(width: 20),
@@ -317,6 +405,7 @@ class _AnalysisState extends State<Analysis> {
     padding: const EdgeInsets.symmetric(horizontal: 24.0),
     child: child,
   );
+
   Widget _buildFullDivider() => Column(
     children: [
       const SizedBox(height: 20),
@@ -328,6 +417,7 @@ class _AnalysisState extends State<Analysis> {
       const SizedBox(height: 20),
     ],
   );
+
   Widget _buildSectionTitle(String title) => Padding(
     padding: const EdgeInsets.only(bottom: 20),
     child: Text(
@@ -494,6 +584,91 @@ class _AnalysisState extends State<Analysis> {
     return cs[i % cs.length];
   }
 
+  Widget _buildAssetSetting() {
+    int fixedUsed = _getUsedAmount('고정');
+    int fixedTotal = _getFixedBudgetTotal(); // 💡 위에서 만든 계산 함수 호출
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "나간 고정지출",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.secondary,
+              ),
+            ),
+            Text(
+              "${nf.format(fixedUsed)}원",
+              style: const TextStyle(fontSize: 14),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "예정된 고정지출",
+              style: TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.secondary,
+              ),
+            ),
+            // 💡 여기서 계산된 총합을 출력
+            Text(
+              "${nf.format(fixedBudgetTotal)}원",
+              style: const TextStyle(fontSize: 14),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildProgressBar(String title, int used, int total) {
+    double progress = total > 0 ? (used / total).clamp(0.0, 1.0) : 0.0;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 8.0, horizontal: 16.0),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(title),
+              Text("${nf.format(used)} / ${nf.format(total)}원"),
+            ],
+          ),
+          LinearProgressIndicator(
+            value: progress,
+            color: const Color(0xFF6C63FF),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 실제 사용액 계산 (날짜 필터링)
+  int _getUsedAmount(String type) {
+    // 예: dailyData 리스트를 순회하며 오늘까지의 지출을 합산
+    return dailyData
+        .where((item) => item['type'] == type)
+        .fold(0, (sum, item) => sum + (item['amount'] as int));
+  }
+
+  // 고정/변동 예산 합계 (이전에 불러온 _budgetMap 활용)
+  int _getTotalBudget(String type) {
+    return _budgetMap.entries
+        .where((e) => e.key.contains(type)) // '고정', '변동' 키워드 매칭
+        .fold(0, (sum, e) => sum + e.value);
+  }
+
+  // 상위 3개 지출 리스트 (이미 날짜 필터링된 currentMonthExpenses에서 상위 3개 추출)
   Widget _buildTop3List(List<Map<String, dynamic>> top3) {
     if (top3.isEmpty) return const Center(child: Text("지출 내역이 없습니다."));
     return Column(
@@ -562,20 +737,26 @@ class LineChartPainter extends CustomPainter {
     int days = DateTime(selectedMonth.year, selectedMonth.month + 1, 0).day;
     double dW = w / (days - 1);
 
-    final p = Paint()
+    final linePaint = Paint()
       ..color = Colors.grey.shade200
       ..strokeWidth = 1;
-    for (int i = 0; i <= 2; i++) {
-      double y = h - (h / 2 * i);
-      canvas.drawLine(Offset(lp, y), Offset(size.width, y), p);
-      _drawT(
-        canvas,
-        '${((maxAmount / 2 * i) / 10000).toInt()}만',
-        Offset(0, y - 6),
+
+    for (int i = 0; i <= 3; i++) {
+      double lineY = h - (i * h / 3);
+
+      canvas.drawLine(
+        Offset(lp, lineY),
+        Offset(size.width, lineY),
+        linePaint,
       );
+
+      String labelText = "${(maxAmount * i / 4 / 10000).toInt()}";
+
+      _drawT(canvas, labelText, Offset(lp - 40, lineY - 5));
     }
+
     _drawT(canvas, "1일", Offset(lp, h + 5));
-    _drawT(canvas, "${days}일", Offset(size.width - 25, h + 5));
+    _drawT(canvas, "${days}일", Offset(size.width - 20, h + 5));
 
     _drawPath(
       canvas,
@@ -592,7 +773,7 @@ class LineChartPainter extends CustomPainter {
       dW,
       lp,
       dailyData,
-      const Color(0xFF6C63FF),
+      AppColors.primary,
       3,
       isCur: true,
     );
@@ -639,11 +820,11 @@ class LineChartPainter extends CustomPainter {
     );
   }
 
-  void _drawT(Canvas c, String t, Offset o, {Color color = AppColors.grey}) {
+  void _drawT(Canvas c, String text, Offset o, {Color color = Colors.grey}) {
     TextPainter(
         text: TextSpan(
-          text: t,
-          style: TextStyle(color: color, fontSize: 10),
+          text: text, // 💡 전달받은 text를 그대로 사용합니다.
+          style: const TextStyle(color: Colors.grey, fontSize: 10),
         ),
         textDirection: ui.TextDirection.ltr,
       )
