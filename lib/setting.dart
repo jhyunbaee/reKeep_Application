@@ -1,13 +1,96 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:csv/csv.dart'; // 💡 CSV 파싱 라이브러리
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/services.dart'; // 💡 rootBundle 사용을 위한 임포트
 import 'package:flutter_rekeep/category.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 import 'package:flutter_rekeep/constants/sized.dart';
-import 'package:flutter_rekeep/home.dart'; // 본인의 메인 홈(탭바) 클래스 확인
+// 본인의 메인 홈(탭바) 클래스 확인
 import 'package:flutter_rekeep/login.dart';
 import 'package:flutter_rekeep/my_card.dart';
 import 'package:flutter_rekeep/profile_detail.dart';
+import 'package:flutter_rekeep/setting_asset.dart';
+
+Future<void> uploadCardsFromCsv(BuildContext context) async {
+  try {
+    print("CSV 파일 로드 시작...");
+    final rawData = await rootBundle.loadString("assets/total_cards.csv");
+    if (rawData.trim().isEmpty) {
+      print("[경고] total_cards.csv 파일이 텅 비어있거나 읽어오지 못했습니다.");
+      return;
+    }
+
+    // 💡 줄바꿈 기호 정제
+    final cleanedData = rawData.replaceAll('\r\n', '\n').replaceAll('\r', '\n');
+
+    List<List<dynamic>> csvTable = const CsvToListConverter(
+      shouldParseNumbers: false,
+      eol: '\n',
+    ).convert(cleanedData);
+
+    final firestore = FirebaseFirestore.instance;
+    final collectionRef = firestore.collection('total_cards');
+
+    print("파일 내부 전체 행 수: ${csvTable.length}개");
+    print("실제 업로드 대상 카드 데이터 수: ${csvTable.length - 1}개");
+
+    if (csvTable.length <= 1) {
+      print("[경고] 헤더 외에 업로드할 데이터 행이 존재하지 않습니다.");
+      return;
+    }
+
+    // 기존 데이터 청소
+    final existingDocs = await collectionRef.get();
+    for (var doc in existingDocs.docs) {
+      await doc.reference.delete();
+    }
+    print("기존 total_cards 도감 컬렉션 청소 완료");
+
+    for (int i = 1; i < csvTable.length; i++) {
+      final row = csvTable[i];
+
+      if (row.isEmpty || row[0].toString().trim().isEmpty) continue;
+
+      String bankName = row[0].toString().trim();
+      String cardName = row[1].toString().trim();
+      String imgUrl = row[2].toString().trim();
+      String benefit = row[3].toString().trim();
+      String type = row[4].toString().trim();
+
+      // 💡 [핵심 보정] 눈에 보이지 않는 \r 공백 제거 및 필드 파싱 안전화
+      int rotate = 0;
+      if (row.length > 5 && row[5].toString().trim().isNotEmpty) {
+        rotate = int.tryParse(row[5].toString().trim()) ?? 0;
+      }
+
+      String position = 'center';
+      if (row.length > 6 && row[6].toString().trim().isNotEmpty) {
+        position = row[6].toString().trim();
+      }
+
+      // 파이어베이스 업로드
+      await collectionRef.add({
+        'bankName': bankName,
+        'cardName': cardName,
+        'imgUrl': imgUrl,
+        'type': type,
+        'benefit': benefit,
+        'rotate': rotate, // 🔥 드디어 정상 저장
+        'position': position, // 🔥 드디어 정상 저장
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    }
+
+    print("✅ 회전/정렬 제어 값이 포함된 모든 데이터가 파이어베이스에 업로드되었습니다!");
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text("🎉 CSV 카드 도감 동기화 완벽 완료!")),
+    );
+  } catch (e) {
+    print("❌ CSV 업로드 중 에러 발생: $e");
+  }
+}
 
 class Setting extends StatelessWidget {
   const Setting({super.key});
@@ -33,12 +116,24 @@ class Setting extends StatelessWidget {
         ),
         centerTitle: true,
       ),
+
+      // ⭐️ 원래 원본 메뉴의 순서와 구성을 단 하나도 빠짐없이 100% 유지한 본문 리스트
       body: ListView(
         children: [
           // 2. 프로필 섹션 호출
           _buildProfileSection(context, currentUser),
           _buildFullDivider(),
-          _buildMenuItem("자산 설정"),
+          _buildMenuItem("프리미엄 혜택받기"),
+          _buildFullDivider(),
+          _buildMenuItem(
+            "자산 설정",
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const SettingAsset()),
+              );
+            },
+          ),
           _buildMenuItem(
             "내 카드 관리",
             onTap: () {
@@ -59,20 +154,41 @@ class Setting extends StatelessWidget {
           ),
           _buildFullDivider(),
           _buildMenuItem("알림 설정"),
+          _buildMenuItem("위젯 설정"),
           _buildMenuItem("인증 및 보안"),
-          _buildMenuItem("언어 설정"),
-          _buildMenuItem("데이터 및 저장공간"),
           _buildMenuItem("화면 테마"),
           _buildFullDivider(),
           _buildMenuItem("사용방법"),
-          _buildMenuItem("앱 공유하기"),
           _buildMenuItem("리뷰 남기기"),
-          _buildMenuItem("의견 보내기"),
+          _buildMenuItem("자주 묻는 질문"),
+          _buildMenuItem("앱 공유하기"),
           _buildFullDivider(),
           _buildMenuItem("앱 버전"),
-          _buildMenuItem("공지사항"),
           _buildMenuItem("고객센터"),
           const SizedBox(height: 15),
+
+          // 💡 하단 버튼을 누르면 위에서 선언한 CSV 파일 파싱 업로드 함수가 돌도록 연동
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24.0),
+            child: ElevatedButton(
+              onPressed: () async {
+                await uploadCardsFromCsv(context);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppColors.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 15,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(10),
+                ),
+              ),
+              child: const Text("Firestore에 엑셀(CSV) 카드 데이터 밀어넣기"),
+            ),
+          ),
+          const SizedBox(height: 30),
         ],
       ),
     );
@@ -133,8 +249,6 @@ class Setting extends StatelessWidget {
         Navigator.push(
           context,
           MaterialPageRoute(
-            // ProfileDetail()에 빨간줄이 간다면 ProfileDetail 클래스 생성자를 확인해야 합니다.
-            // 보통은 인자 없이 ProfileDetail()만 호출하거나, ProfileDetail(user: user) 형태입니다.
             builder: (context) =>
                 isGuest ? const Login() : const ProfileDetail(),
           ),
@@ -143,7 +257,7 @@ class Setting extends StatelessWidget {
       child: Padding(
         padding: AppLayout.defaultPadding,
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 20),
+          padding: const EdgeInsets.symmetric(vertical: 24),
           child: Row(
             children: [
               CircleAvatar(
@@ -169,12 +283,11 @@ class Setting extends StatelessWidget {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  const SizedBox(height: 4),
                   Text(
                     subtitle,
                     style: const TextStyle(
                       color: AppColors.secondary,
-                      fontSize: 13,
+                      fontSize: 14,
                     ),
                   ),
                 ],

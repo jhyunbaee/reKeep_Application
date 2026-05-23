@@ -1,5 +1,6 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
@@ -65,6 +66,46 @@ class _SettingAssetState extends State<SettingAsset> {
       print("자산 데이터 로드 실패: $e");
       if (mounted) setState(() => isLoading = false);
     }
+  }
+
+  Future<List<String>> _loadCustomItems(String type) async {
+    final doc = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUserId)
+        .collection('settings')
+        .doc('${type}_items')
+        .get();
+
+    if (doc.exists) {
+      return List<String>.from(doc.data()?['list'] ?? []);
+    } else {
+      // 💡 실제 항목을 모두 나열하세요
+      if (type == "고정지출") {
+        return [
+          "관리비",
+          "통신비",
+          "주거비",
+          "인터넷비",
+          "연금",
+          "세금",
+          "구독료",
+          "자기계발",
+          "보험료",
+          "모임비",
+        ];
+      } else {
+        return ["공과금", "교통비", "차량유지비", "의료비", "데이트"];
+      }
+    }
+  }
+
+  Future<void> _saveCustomItems(String type, List<String> items) async {
+    await FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUserId)
+        .collection('settings')
+        .doc('${type}_items')
+        .set({'list': items});
   }
 
   Future<void> _updateAssetData(String field, int value) async {
@@ -150,13 +191,13 @@ class _SettingAssetState extends State<SettingAsset> {
             ),
             _buildAssetItem(
               "고정지출",
-              "매달 고정적인 지출 관리",
-              () => _showComingSoonSheet("고정지출"),
+              "관리비, 통신비 등",
+              () => _showRecurringExpenseSheet("고정지출"),
             ),
             _buildAssetItem(
               "변동지출",
-              "유연한 지출 항목 관리",
-              () => _showComingSoonSheet("변동지출"),
+              "공과금, 교통비 등",
+              () => _showRecurringExpenseSheet("변동지출"),
             ),
           ],
         ),
@@ -237,6 +278,7 @@ class _SettingAssetState extends State<SettingAsset> {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // _showAssetSheet 함수 내부
                   Row(
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
@@ -247,9 +289,61 @@ class _SettingAssetState extends State<SettingAsset> {
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                      GestureDetector(
-                        onTap: () => Navigator.pop(context),
-                        child: const Icon(Icons.close),
+                      Row(
+                        // 💡 Row로 감싸서 버튼 2개를 나란히 배치
+                        children: [
+                          IconButton(
+                            icon: const Icon(Icons.refresh, size: 20),
+                            onPressed: () async {
+                              // 1. 확인창 띄우기
+                              bool? confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (context) => AlertDialog(
+                                  title: Text(
+                                    "$title 초기화",
+                                    style: const TextStyle(
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 18,
+                                    ),
+                                  ),
+                                  content: const Text("정말 0원으로 초기화하시겠습니까?"),
+                                  actions: [
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, false),
+                                      child: const Text(
+                                        "취소",
+                                        style: TextStyle(
+                                          color: AppColors.secondary,
+                                        ),
+                                      ),
+                                    ),
+                                    TextButton(
+                                      onPressed: () =>
+                                          Navigator.pop(context, true),
+                                      child: const Text(
+                                        "확인",
+                                        style: TextStyle(
+                                          color: AppColors.primary,
+                                        ),
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              );
+
+                              // 2. 확인 시 로직 실행
+                              if (confirm == true) {
+                                onSave(0);
+                                Navigator.pop(context); // 바텀시트 닫기
+                              }
+                            },
+                          ),
+                          GestureDetector(
+                            onTap: () => Navigator.pop(context),
+                            child: const Icon(Icons.close),
+                          ),
+                        ],
                       ),
                     ],
                   ),
@@ -324,42 +418,763 @@ class _SettingAssetState extends State<SettingAsset> {
     );
   }
 
-  void _showComingSoonSheet(String title) {
+  void _showRecurringExpenseSheet(String type) {
+    Key listKey = UniqueKey();
+
+    final List<String> items = type == "고정지출"
+        ? ["관리비", "통신비", "주거비", "인터넷비", "연금", "세금", "구독료", "자기계발", "보험료", "모임비"]
+        : ["공과금", "교통비", "차량유지비", "의료비", "데이트"];
+
     showModalBottomSheet(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return FutureBuilder<List<String>>(
+            future: _loadCustomItems(type),
+            builder: (context, snapshot) {
+              if (!snapshot.hasData)
+                return const Center(child: CircularProgressIndicator());
+
+              List<String> items = snapshot.data!; // DB에서 불러온 리스트
+              // 2. 바텀시트 전체를 StatefulBuilder로 감싸세요!
+              return StatefulBuilder(
+                builder: (context, setModalState) {
+                  return Container(
+                    height: MediaQuery.of(context).size.height * 0.7,
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.vertical(
+                        top: Radius.circular(25),
+                      ),
+                    ), // 데이터 로드
+                    child: FutureBuilder<QuerySnapshot>(
+                      key: listKey, // 💡 여기서 listKey를 사용
+                      future: FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(currentUserId)
+                          .collection('recurring_expenses')
+                          .get(),
+                      builder: (context, snapshot) {
+                        final Map<String, Map<String, dynamic>> expenseData =
+                            {};
+                        if (snapshot.hasData) {
+                          for (var doc in snapshot.data!.docs) {
+                            expenseData[doc.id] =
+                                doc.data() as Map<String, dynamic>;
+                          }
+                        }
+                        return Column(
+                          children: [
+                            Padding(
+                              padding: const EdgeInsets.only(
+                                left: 24,
+                                right: 24,
+                                top: 24,
+                                bottom: 20,
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    "$type 관리",
+                                    style: const TextStyle(
+                                      fontSize: 18,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Row(
+                                    // 💡 버튼들을 담을 Row 추가
+                                    children: [
+                                      // 초기화 버튼
+                                      IconButton(
+                                        icon: const Icon(
+                                          Icons.refresh,
+                                          size: 20,
+                                        ),
+                                        onPressed: () => _resetToDefault(
+                                          type,
+                                          setModalState,
+                                        ), // 💡 아래 함수 호출
+                                      ),
+                                      GestureDetector(
+                                        onTap: () => Navigator.pop(context),
+                                        child: const Icon(Icons.close),
+                                      ),
+                                    ],
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Expanded(
+                              child: ListView.builder(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 24,
+                                ),
+                                itemCount: items.length + 1,
+                                itemBuilder: (context, index) {
+                                  if (index == items.length) {
+                                    return Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 10,
+                                      ),
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          border: Border.all(
+                                            color: AppColors.borderColor,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: ListTile(
+                                          leading: const Icon(
+                                            Icons.add,
+                                            color: AppColors.secondary,
+                                          ),
+                                          title: const Text(
+                                            "항목 추가하기",
+                                            style: TextStyle(
+                                              color: AppColors.secondary,
+                                            ),
+                                          ),
+                                          onTap: () async {
+                                            final newName =
+                                                await _showAddItemDialog(
+                                                  context,
+                                                );
+                                            if (newName != null &&
+                                                newName.isNotEmpty) {
+                                              setModalState(() {
+                                                items.add(newName);
+                                              });
+                                              // 💡 2번 로직: UI 변경 후 즉시 DB에 저장
+                                              await _saveCustomItems(
+                                                type,
+                                                items,
+                                              );
+                                            }
+                                          },
+                                        ),
+                                      ),
+                                    );
+                                  }
+
+                                  final itemName = items[index];
+                                  final data = expenseData[itemName];
+                                  final int amount = data?['amount'] ?? 0;
+                                  final String period = data?['period'] ?? "매월";
+                                  final String day = data?['day'] ?? "1일";
+                                  bool isSet = amount > 0;
+
+                                  return Dismissible(
+                                    key: Key(itemName), // 고유한 키
+                                    direction: DismissDirection
+                                        .endToStart, // 왼쪽으로 밀 때 삭제
+                                    background: Container(
+                                      alignment: Alignment.centerRight,
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 20,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: Colors.red,
+                                        borderRadius: BorderRadius.circular(
+                                          10,
+                                        ), // Container와 둥근 모서리 맞춤
+                                      ),
+                                      child: const Icon(
+                                        Icons.delete,
+                                        color: Colors.white,
+                                      ),
+                                    ),
+                                    onDismissed: (direction) async {
+                                      String itemName = items[index];
+
+                                      // 1. UI 반영
+                                      setModalState(() {
+                                        items.removeAt(index);
+                                      });
+
+                                      // 💡 2번 로직: UI 변경 후 즉시 DB에 저장
+                                      await _saveCustomItems(type, items);
+
+                                      // (선택) 상세 데이터도 지우려면 여기서 delete() 호출
+                                    },
+                                    child: Padding(
+                                      padding: const EdgeInsets.only(
+                                        bottom: 10,
+                                      ), // 여기야?
+                                      child: Container(
+                                        decoration: BoxDecoration(
+                                          borderRadius: BorderRadius.circular(
+                                            10,
+                                          ),
+                                          border: Border.all(
+                                            color: AppColors.borderColor,
+                                            width: 1,
+                                          ),
+                                        ),
+                                        child: ListTile(
+                                          title: Text(itemName),
+                                          trailing: isSet
+                                              ? Column(
+                                                  mainAxisAlignment:
+                                                      MainAxisAlignment
+                                                          .center, // 세로 중앙 정렬
+                                                  crossAxisAlignment:
+                                                      CrossAxisAlignment
+                                                          .end, // 오른쪽 정렬
+                                                  children: [
+                                                    // 금액
+                                                    Text(
+                                                      "${formatter.format(amount)}원",
+                                                      style: const TextStyle(
+                                                        fontWeight:
+                                                            FontWeight.bold,
+                                                        color:
+                                                            AppColors.primary,
+                                                        fontSize: 15,
+                                                        height: 1.2,
+                                                      ),
+                                                    ),
+                                                    // 주기 (period와 day를 합쳐서 표시)
+                                                    Text(
+                                                      "$period · $day",
+                                                      style: const TextStyle(
+                                                        fontSize: 12,
+                                                        color:
+                                                            AppColors.secondary,
+                                                        height: 1.2,
+                                                      ),
+                                                    ),
+                                                  ],
+                                                )
+                                              : const Icon(
+                                                  Icons.add_circle_outline,
+                                                  color: AppColors.primary,
+                                                ),
+                                          onTap: () async {
+                                            // 💡 설정 창에서 수정 후 돌아왔을 때 새로고침을 위해 await 추가
+                                            _showDetailConfigSheet(
+                                              itemName,
+                                              amount,
+                                              period,
+                                              day,
+                                            );
+
+                                            // 상세창 닫힌 후 데이터 새로고침
+                                            setModalState(() {
+                                              // FutureBuilder를 재실행하기 위해 키를 갱신
+                                              // (이 코드가 작동하려면 _listKey가 StatefulBuilder 범위 내에 있어야 합니다)
+                                            });
+                                          },
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                },
+                              ),
+                            ),
+                            const SizedBox(height: 30),
+                          ],
+                        );
+                      },
+                    ),
+                  );
+                },
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _resetAllData() async {
+    // 1. 확인 팝업
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          "전체 초기화",
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
         ),
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  title,
-                  style: const TextStyle(
-                    fontSize: 18,
-                    fontWeight: FontWeight.bold,
+        content: const Text("정말 모든 항목을\n0원으로 초기화하시겠습니까?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text("취소"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text("확인"),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      if (currentUserId == null) return;
+
+      // 2. 각 컬렉션별 데이터 삭제
+      final firestore = FirebaseFirestore.instance;
+      final userRef = firestore.collection('users').doc(currentUserId);
+
+      // 자산 삭제
+      await userRef.collection('assets').doc('management').delete();
+
+      // 예산 삭제 (total_budget 및 카테고리별)
+      final budgetSnapshot = await userRef.collection('budgets').get();
+      for (var doc in budgetSnapshot.docs) await doc.reference.delete();
+
+      // 고정/변동지출 리스트 설정 삭제
+      await userRef.collection('settings').doc('고정지출_items').delete();
+      await userRef.collection('settings').doc('변동지출_items').delete();
+
+      // 상세 지출 데이터 삭제
+      final expenseSnapshot = await userRef
+          .collection('recurring_expenses')
+          .get();
+      for (var doc in expenseSnapshot.docs) await doc.reference.delete();
+
+      // 3. UI 갱신 (데이터 다시 로드)
+      _loadAssetData();
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text("모든 데이터가 초기화되었습니다.")));
+      }
+    }
+  }
+
+  Future<void> _resetToDefault(String type, StateSetter setModalState) async {
+    bool? confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          "전체 초기화",
+          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18),
+        ),
+        content: const Text("정말 모든 항목을\n0원으로 초기화하시겠습니까?"),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text(
+              "취소",
+              style: TextStyle(color: AppColors.secondary),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text(
+              "확인",
+              style: TextStyle(color: AppColors.primary),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      // 1. 리스트 설정 문서 삭제
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUserId)
+          .collection('settings')
+          .doc('${type}_items')
+          .delete();
+
+      // 2. 💡 상세 데이터(금액, 주기) 모두 삭제 (이 부분이 빠져있던 핵심입니다!)
+      final snapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUserId)
+          .collection('recurring_expenses')
+          .get();
+
+      for (var doc in snapshot.docs) {
+        await doc.reference.delete();
+      }
+
+      // 3. 바텀시트 닫기 (새로고침이 까다로우니 닫아버리는 방식 적용)
+      Navigator.pop(context);
+    }
+  }
+
+  Future<String?> _showAddItemDialog(BuildContext context) {
+    TextEditingController nameController = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("항목 추가"),
+        content: TextField(
+          controller: nameController,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: "항목 이름을 입력하세요"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("취소"),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, nameController.text),
+            child: const Text("추가"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDetailConfigSheet(
+    String itemName,
+    int initialAmount,
+    String initialPeriod,
+    String initialDay,
+  ) {
+    final TextEditingController amountController = TextEditingController(
+      text: initialAmount > 0 ? formatter.format(initialAmount) : "",
+    );
+
+    amountController.addListener(() {
+      String text = amountController.text
+          .replaceAll(',', '')
+          .replaceAll('원', '')
+          .trim();
+      if (text.isEmpty) return;
+
+      // 숫자로 변환 후 다시 포맷팅
+      double? value = double.tryParse(text);
+      if (value != null) {
+        String newText = formatter.format(value); // int 포맷팅
+
+        // 커서 위치가 꼬이지 않게 방지하면서 텍스트 업데이트
+        if (newText != amountController.text) {
+          amountController.value = TextEditingValue(
+            text: newText,
+            selection: TextSelection.collapsed(offset: newText.length),
+          );
+        }
+      }
+    });
+    // 상태 변수들
+    String selectedPeriod = initialPeriod.isEmpty ? "매월" : initialPeriod;
+    String selectedDayOrDayOfWeek = initialDay.isEmpty ? "1일" : initialDay;
+
+    final List<String> periods = ["매월", "매주", "매일"];
+    final Map<String, List<String>> periodOptions = {
+      "매월": List.generate(31, (i) => "${i + 1}일"),
+      "매주": ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"],
+      "매일": ["매일"],
+    };
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+            left: 24,
+            right: 24,
+            top: 24,
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "$itemName 설정",
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  GestureDetector(
+                    onTap: () => Navigator.pop(context),
+                    child: const Icon(Icons.close), // 순수 아이콘만 사용
+                  ),
+                ],
+              ),
+              const SizedBox(height: 20),
+
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 80,
+                    child: Text(
+                      "주기 선택",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: AppColors.secondary,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: Material(
+                      color: AppColors.fieldColor,
+                      borderRadius: BorderRadius.circular(10),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 16),
+                        child: InkWell(
+                          // 💡 InkWell 사용으로 클릭 효과 제공
+                          onTap: () async {
+                            // String에서 숫자 부분만 추출하여 int로 변환 (예: "19일" -> 19)
+                            int currentDay =
+                                int.tryParse(
+                                  selectedDayOrDayOfWeek.replaceAll(
+                                    RegExp(r'[^0-9]'),
+                                    '',
+                                  ),
+                                ) ??
+                                1;
+
+                            final result = await _showPeriodPickerSheet(
+                              selectedPeriod,
+                              currentDay,
+                            );
+
+                            if (result != null) {
+                              setModalState(() {
+                                selectedPeriod = result['period'];
+                                // 결과를 받아와서 다시 String으로 저장
+                                selectedDayOrDayOfWeek =
+                                    "${result['day']}${selectedPeriod == "매월" ? "" : (selectedPeriod == "매주" ? "" : "")}";
+                              });
+                            }
+                          },
+                          child: SizedBox(
+                            height: 55,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceBetween,
+                                children: [
+                                  Text(
+                                    "$selectedPeriod / $selectedDayOrDayOfWeek",
+                                    style: const TextStyle(fontSize: 15),
+                                  ),
+                                  const Icon(
+                                    Icons.arrow_drop_down,
+                                    size: 20,
+                                    color: Colors.grey,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 15),
+
+              // 2. 금액 필드 (가로 배치)
+              Row(
+                children: [
+                  const SizedBox(
+                    width: 80,
+                    child: Text(
+                      "금액",
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        fontSize: 15,
+                        color: AppColors.secondary,
+                      ),
+                    ),
+                  ),
+                  Expanded(
+                    child: SizedBox(
+                      height: 55,
+                      child: TextField(
+                        controller: amountController,
+                        keyboardType: TextInputType.number,
+                        decoration: InputDecoration(
+                          hintText: "금액 입력",
+                          filled: true,
+                          fillColor: AppColors.fieldColor,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(10),
+                            borderSide: BorderSide.none,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(
+                height: 20,
+              ), // _showDetailConfigSheet 함수 내의 완료 버튼 부분
+              SizedBox(
+                width: double.infinity,
+                height: 55,
+                child: ElevatedButton(
+                  onPressed: () async {
+                    // 1. 텍스트 필드에서 금액 추출
+                    String cleanText = amountController.text
+                        .replaceAll(',', '')
+                        .trim();
+                    int parsedAmount = int.tryParse(cleanText) ?? 0;
+                    // 2. Firestore에 데이터 저장 (핵심!)
+                    if (currentUserId != null) {
+                      await FirebaseFirestore.instance
+                          .collection('users')
+                          .doc(currentUserId)
+                          .collection('recurring_expenses')
+                          .doc(itemName) // 항목 이름을 문서ID로 사용
+                          .set({
+                            'amount': parsedAmount,
+                            'period': selectedPeriod,
+                            'day': selectedDayOrDayOfWeek,
+                            'updatedAt':
+                                FieldValue.serverTimestamp(), // 수정 시간 기록
+                          }, SetOptions(merge: true));
+                    }
+
+                    // 3. 창 닫기
+                    Navigator.pop(context); // 상세 설정창 닫기
+                    Navigator.pop(context); // 고정/변동지출 관리 목록창 닫기
+                  },
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  child: const Text(
+                    "저장",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
                 ),
-                GestureDetector(
-                  onTap: () => Navigator.pop(context),
-                  child: const Icon(Icons.close),
+              ),
+              const SizedBox(
+                height: 20,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<Map<String, dynamic>?> _showPeriodPickerSheet(
+    String currentP,
+    int currentD,
+  ) async {
+    final List<String> periods = ["매월", "매주", "매일"];
+    final Map<String, List<String>> periodOptions = {
+      "매월": List.generate(31, (i) => "${i + 1}일"),
+      "매주": ["월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일"],
+      "매일": ["매일"],
+    };
+
+    String tempPeriod = currentP;
+    String tempDay = (currentP == "매월"
+        ? "$currentD일"
+        : (currentP == "매주" ? "월요일" : "매일"));
+
+    return await showModalBottomSheet<Map<String, dynamic>>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        // 💡 StatefulBuilder 추가
+        builder: (context, setModalState) => Container(
+          height: 300,
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    // 왼쪽: 주기 선택
+                    Expanded(
+                      child: CupertinoPicker(
+                        itemExtent: 40,
+                        scrollController: FixedExtentScrollController(
+                          initialItem: periods.indexOf(tempPeriod),
+                        ),
+                        onSelectedItemChanged: (i) {
+                          setModalState(() {
+                            tempPeriod = periods[i];
+                            tempDay = periodOptions[tempPeriod]!
+                                .first; // 주기 변경 시 우측 초기값 설정
+                          });
+                        },
+                        children: periods
+                            .map((p) => Center(child: Text(p)))
+                            .toList(),
+                      ),
+                    ),
+                    // 오른쪽: 동적 선택 (주기에 따라 변경)
+                    Expanded(
+                      child: CupertinoPicker(
+                        key: ValueKey(
+                          tempPeriod,
+                        ), // 💡 Key를 통해 주기 바뀔 때 Picker 갱신
+                        itemExtent: 40,
+                        onSelectedItemChanged: (i) =>
+                            tempDay = periodOptions[tempPeriod]![i],
+                        children: periodOptions[tempPeriod]!
+                            .map((item) => Center(child: Text(item)))
+                            .toList(),
+                      ),
+                    ),
+                  ],
                 ),
-              ],
-            ),
-            const SizedBox(height: 20),
-            Text(
-              "$title 등록 및 관리 폼이 여기에 들어옵니다.",
-              style: const TextStyle(color: AppColors.secondary),
-            ),
-            const SizedBox(height: 20),
-          ],
+              ),
+              const SizedBox(
+                height: 15,
+              ),
+              SizedBox(
+                height: 55,
+                width: double.infinity,
+                child: ElevatedButton(
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    elevation: 0,
+                  ),
+                  onPressed: () => Navigator.pop(context, {
+                    'period': tempPeriod,
+                    'day': tempDay,
+                  }),
+                  child: const Text(
+                    "확인",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(
+                height: 20,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -393,6 +1208,8 @@ class _SettingAssetState extends State<SettingAsset> {
       categoryControllers[cat['name']] = TextEditingController();
     }
 
+    Key _listKey = UniqueKey();
+
     int lastMonthExpense = 845000;
 
     showModalBottomSheet(
@@ -401,6 +1218,7 @@ class _SettingAssetState extends State<SettingAsset> {
       backgroundColor: Colors.transparent,
       builder: (context) {
         return FutureBuilder<QuerySnapshot>(
+          key: _listKey,
           future: FirebaseFirestore.instance
               .collection('users')
               .doc(currentUserId ?? 'guest')
@@ -495,7 +1313,8 @@ class _SettingAssetState extends State<SettingAsset> {
                     children: [
                       Padding(
                         padding: const EdgeInsets.all(24.0),
-                        child: Row(
+                        child: // _showBudgetSheet 함수 내부 헤더 Row
+                        Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             const Text(
@@ -505,9 +1324,84 @@ class _SettingAssetState extends State<SettingAsset> {
                                 fontWeight: FontWeight.bold,
                               ),
                             ),
-                            GestureDetector(
-                              onTap: () => Navigator.pop(context),
-                              child: const Icon(Icons.close),
+                            Row(
+                              children: [
+                                // _showBudgetSheet 함수 내부 초기화 IconButton
+                                IconButton(
+                                  icon: const Icon(Icons.refresh, size: 20),
+                                  onPressed: () async {
+                                    // 1. 확인 팝업 (선택 사항: 실수 방지)
+                                    bool? confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text(
+                                          "예산 초기화",
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 18,
+                                          ),
+                                        ),
+                                        content: const Text(
+                                          "정말 모든 항목을\n0원으로 초기화하시겠습니까?",
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text("취소"),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text(
+                                              "확인",
+                                              style: TextStyle(
+                                                color: AppColors.primary,
+                                              ),
+                                            ),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+
+                                    if (confirm == true) {
+                                      // 2. Firestore에 0으로 저장 (DB 즉시 반영)
+                                      final firestore = FirebaseFirestore
+                                          .instance
+                                          .collection('users')
+                                          .doc(currentUserId);
+
+                                      // 전체 예산 0으로
+                                      await firestore
+                                          .collection('budgets')
+                                          .doc('total_budget')
+                                          .set({
+                                            'amount': 0,
+                                          }, SetOptions(merge: true));
+
+                                      // 각 카테고리별 예산 0으로
+                                      for (var cat in categories) {
+                                        await firestore
+                                            .collection('budgets')
+                                            .doc(cat['name'])
+                                            .set({
+                                              'amount': 0,
+                                            }, SetOptions(merge: true));
+                                      }
+
+                                      // 3. UI 상태 갱신 (부모 위젯의 budget 변수도 0으로)
+                                      onSave(0);
+
+                                      // 4. 바텀시트 닫기
+                                      Navigator.pop(context);
+                                    }
+                                  },
+                                ),
+                                GestureDetector(
+                                  onTap: () => Navigator.pop(context),
+                                  child: const Icon(Icons.close),
+                                ),
+                              ],
                             ),
                           ],
                         ),
