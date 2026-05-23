@@ -43,9 +43,7 @@ class _MyCardState extends State<MyCard> {
                 child: Text(
                   isEditing ? "완료" : "편집",
                   style: TextStyle(
-                    color: isEditing
-                        ? AppColors.pointColor
-                        : AppColors.secondary,
+                    color: isEditing ? AppColors.pointColor : AppColors.primary,
                     fontWeight: FontWeight.bold,
                     fontSize: 14,
                   ),
@@ -217,7 +215,7 @@ class _MyCardState extends State<MyCard> {
                   ),
                 ),
               ),
-
+              const SizedBox(height: 10),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.center,
                 children: [
@@ -311,7 +309,7 @@ class _MyCardState extends State<MyCard> {
               // 하단 닫기 버튼
               SizedBox(
                 width: double.infinity,
-                height: 52,
+                height: 55,
                 child: ElevatedButton(
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
@@ -395,19 +393,28 @@ class _MyCardState extends State<MyCard> {
                     left: 24,
                     right: 24,
                     top: 24,
-                    bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+                    bottom: MediaQuery.of(context).viewInsets.bottom + 20,
                   ),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        "새 카드 추가하기",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          color: Colors.black,
-                        ),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "새 카드 추가하기",
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.black,
+                            ),
+                          ),
+                          GestureDetector(
+                            onTap: () => Navigator.pop(context),
+                            child: const Icon(Icons.close), // 순수 아이콘만 사용
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 24),
                       _buildInputRow(
@@ -424,9 +431,9 @@ class _MyCardState extends State<MyCard> {
                               ),
                             ),
                             decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.only(
-                                left: 12,
-                                right: 10,
+                              contentPadding: EdgeInsets.symmetric(
+                                vertical: 0,
+                                horizontal: 0,
                               ),
                               border: InputBorder.none,
                             ),
@@ -467,10 +474,6 @@ class _MyCardState extends State<MyCard> {
                               ),
                             ),
                             decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.only(
-                                left: 12,
-                                right: 10,
-                              ),
                               border: InputBorder.none,
                             ),
                             value: selectedCardType,
@@ -521,10 +524,6 @@ class _MyCardState extends State<MyCard> {
                               ),
                             ),
                             decoration: const InputDecoration(
-                              contentPadding: EdgeInsets.only(
-                                left: 12,
-                                right: 10,
-                              ),
                               border: InputBorder.none,
                             ),
                             value:
@@ -558,7 +557,7 @@ class _MyCardState extends State<MyCard> {
                           ),
                         ),
                       ),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 30),
                       ElevatedButton(
                         onPressed: (selectedCardDoc == null)
                             ? null
@@ -591,7 +590,7 @@ class _MyCardState extends State<MyCard> {
                                 Navigator.pop(context);
                                 ScaffoldMessenger.of(context).showSnackBar(
                                   const SnackBar(
-                                    content: Text("💳 내 지갑에 카드가 안전하게 추가되었습니다!"),
+                                    content: Text("내 지갑에 카드가 안전하게 추가되었습니다!"),
                                   ),
                                 );
                               },
@@ -648,12 +647,17 @@ class _MyCardState extends State<MyCard> {
   }
 
   Widget _buildFieldContainer(Widget child) {
-    return Container(
-      decoration: BoxDecoration(
-        color: AppColors.fieldColor,
-        borderRadius: BorderRadius.circular(10),
+    return SizedBox(
+      height: 55,
+      child: Container(
+        alignment: Alignment.center, // 💡 추가: 컨테이너 내부 자식을 중앙으로
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        decoration: BoxDecoration(
+          color: AppColors.fieldColor,
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: child,
       ),
-      child: child,
     );
   }
 
