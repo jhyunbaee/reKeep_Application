@@ -57,7 +57,7 @@ class _AssetState extends State<Asset> {
                 style: const TextStyle(
                   fontWeight: FontWeight.bold,
                   color: Colors.black,
-                  fontSize: 20,
+                  fontSize: 18,
                 ),
               ),
 
@@ -251,7 +251,7 @@ class _AssetState extends State<Asset> {
               Text(
                 "${nf.format(totalAsset)}원",
                 style: const TextStyle(
-                  fontSize: 24,
+                  fontSize: 20,
                   fontWeight: FontWeight.bold,
                   color: Colors.black,
                 ),
@@ -345,7 +345,7 @@ class _AssetState extends State<Asset> {
           // 두 번째 줄: 이체 (가로 100% 꽉 채우기 💡)
           Row(
             children: [
-              _buildCompItem("이체", transfer, Colors.purple),
+              _buildCompItem("이체", transfer, Colors.green),
             ],
           ),
         ],
@@ -367,10 +367,10 @@ class _AssetState extends State<Asset> {
         ), // 내부 여백 추가
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(12),
+          borderRadius: BorderRadius.circular(10),
           // 깔끔한 연한 회색 테두리 추가 💡
           border: Border.all(
-            color: AppColors.dividerColor,
+            color: AppColors.borderColor,
             width: 1,
           ),
         ),
@@ -556,7 +556,7 @@ class _AssetState extends State<Asset> {
             height: 40,
             decoration: BoxDecoration(
               color: bankColor,
-              borderRadius: BorderRadius.circular(100),
+              borderRadius: BorderRadius.circular(50),
             ),
             child: Center(
               child: Container(
