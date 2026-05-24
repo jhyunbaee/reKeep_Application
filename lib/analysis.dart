@@ -365,7 +365,7 @@ class _AnalysisState extends State<Analysis> {
                 padding: EdgeInsets.only(left: 0, bottom: 5), // 텍스트는 왼쪽 끝에 붙음
                 child: Text(
                   "(만원)",
-                  style: TextStyle(fontSize: 10, color: Colors.grey),
+                  style: TextStyle(fontSize: 10, color: AppColors.secondary),
                 ),
               ),
               CustomPaint(
@@ -383,9 +383,9 @@ class _AnalysisState extends State<Analysis> {
           ),
         ),
         Row(
-          mainAxisAlignment: MainAxisAlignment.start,
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            _chartLegend("지난달", Colors.grey),
+            _chartLegend("지난달", AppColors.secondary),
             const SizedBox(width: 20),
             _chartLegend("이번달", AppColors.primary),
           ],
@@ -430,7 +430,10 @@ class _AnalysisState extends State<Analysis> {
     children: [
       Container(width: 10, height: 2, color: color),
       const SizedBox(width: 5),
-      Text(label, style: const TextStyle(fontSize: 12, color: AppColors.grey)),
+      Text(
+        label,
+        style: const TextStyle(fontSize: 12, color: AppColors.secondary),
+      ),
     ],
   );
 
@@ -458,7 +461,7 @@ class _AnalysisState extends State<Analysis> {
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade100),
+        border: Border.all(color: AppColors.borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -550,7 +553,7 @@ class _AnalysisState extends State<Analysis> {
                             : "예산 미설정",
                         style: TextStyle(
                           fontSize: 12,
-                          color: Colors.grey.shade500,
+                          color: AppColors.secondary,
                           fontWeight: FontWeight.w500,
                         ),
                       ),
@@ -681,7 +684,7 @@ class _AnalysisState extends State<Analysis> {
           decoration: BoxDecoration(
             color: Colors.white,
             borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Colors.grey.shade100),
+            border: Border.all(color: AppColors.borderColor),
           ),
           child: Row(
             children: [
@@ -738,7 +741,7 @@ class LineChartPainter extends CustomPainter {
     double dW = w / (days - 1);
 
     final linePaint = Paint()
-      ..color = Colors.grey.shade200
+      ..color = AppColors.borderColor
       ..strokeWidth = 1;
 
     for (int i = 0; i <= 3; i++) {
@@ -764,8 +767,8 @@ class LineChartPainter extends CustomPainter {
       dW,
       lp,
       lastMonthData,
-      Colors.grey.withOpacity(0.4),
-      2,
+      AppColors.secondary.withOpacity(0.5),
+      3,
     );
     _drawPath(
       canvas,
@@ -805,7 +808,7 @@ class LineChartPainter extends CustomPainter {
           canvas.drawLine(
             Offset(x, 0),
             Offset(x, h),
-            Paint()..color = AppColors.primaryLight,
+            Paint()..color = AppColors.secondary,
           );
         }
       }
@@ -820,11 +823,16 @@ class LineChartPainter extends CustomPainter {
     );
   }
 
-  void _drawT(Canvas c, String text, Offset o, {Color color = Colors.grey}) {
+  void _drawT(
+    Canvas c,
+    String text,
+    Offset o, {
+    Color color = AppColors.secondary,
+  }) {
     TextPainter(
         text: TextSpan(
           text: text, // 💡 전달받은 text를 그대로 사용합니다.
-          style: const TextStyle(color: Colors.grey, fontSize: 10),
+          style: const TextStyle(color: AppColors.secondary, fontSize: 10),
         ),
         textDirection: ui.TextDirection.ltr,
       )
