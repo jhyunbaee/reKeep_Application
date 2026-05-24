@@ -18,7 +18,9 @@ class BottomMenuBar extends StatelessWidget {
       height: 85, // 높이를 넉넉하게 수정
       decoration: BoxDecoration(
         color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey.withOpacity(0.2))),
+        border: Border(
+          top: BorderSide(color: AppColors.borderColor),
+        ),
       ),
       child: SafeArea(
         child: Row(
@@ -42,18 +44,19 @@ class BottomMenuBar extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
+          const SizedBox(height: 5),
           FaIcon(
             icon,
             size: 18,
-            color: isSelected ? AppColors.primary : Colors.grey[400],
+            color: isSelected ? AppColors.primary : AppColors.secondary,
           ),
           const SizedBox(height: 5),
           Text(
             label,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 10,
               fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-              color: isSelected ? AppColors.primary : Colors.grey[400],
+              color: isSelected ? AppColors.primary : AppColors.secondary,
             ),
           ),
         ],
