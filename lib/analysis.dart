@@ -20,29 +20,100 @@ class _AnalysisState extends State<Analysis> {
   List<Map<String, dynamic>> dailyData = [];
   int fixedBudgetFromSetting = 0;
 
-  // 💡 성능 보존 및 비동기 폭사 방지를 위해 예산 데이터를 한 번에 담아둘 맵
   Map<String, int> _budgetMap = {};
   bool _isBudgetLoading = true;
+
+  int _paidFixedTotal = 0;
+  int _upcomingFixedTotal = 0;
+  int _paidVariableTotal = 0;
+  int _upcomingVariableTotal = 0;
+
+  List<Map<String, dynamic>> _paidFixedItems = [];
+  List<Map<String, dynamic>> _upcomingFixedItems = [];
+  List<Map<String, dynamic>> _paidVariableItems = [];
+  List<Map<String, dynamic>> _upcomingVariableItems = [];
+
+  bool _showPaidFixed = false;
+  bool _showUpcomingFixed = false;
+  bool _showPaidVariable = false;
+  bool _showUpcomingVariable = false;
 
   @override
   void initState() {
     super.initState();
-    _loadInitialData(); // 모든 데이터를 순차적으로 로드
+    _loadInitialData();
   }
 
   Future<void> _loadInitialData() async {
-    // 1. 모든 예산 데이터를 먼저 다 가져옴
     await _loadAllBudgets();
-    // 2. 그 다음에 고정지출 항목 리스트를 가져옴
     await _getFixedItemsList();
-
-    // 3. 둘 다 완료된 후 최종 합계 계산 및 화면 갱신
+    await _loadRecurringExpenses();
     setState(() {
       _isBudgetLoading = false;
     });
   }
 
-  // 💡 카테고리 내부에서 무한 FutureBuilder를 돌리는 대신, 이 함수로 전체 예산을 한방에 긁어옵니다.
+  Future<void> _loadRecurringExpenses() async {
+    if (userId == null) return;
+
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('recurring_expenses')
+        .get();
+
+    final int today = DateTime.now().day;
+    int paid = 0, upcoming = 0, paidVar = 0, upcomingVar = 0;
+    List<Map<String, dynamic>> paidFixedList = [];
+    List<Map<String, dynamic>> upcomingFixedList = [];
+    List<Map<String, dynamic>> paidVarList = [];
+    List<Map<String, dynamic>> upcomingVarList = [];
+
+    for (var doc in snapshot.docs) {
+      final data = doc.data();
+      final int amount = (data['amount'] ?? 0) as int;
+      var dayData = data['day'] ?? '1일';
+      final int day = (dayData is String)
+          ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+          : (dayData as int);
+      final String expenseType = data['expenseType'] ?? '고정지출';
+      final String name = data['name'] ?? '';
+
+      final item = {'name': name, 'amount': amount, 'day': day};
+
+      if (expenseType == '고정지출') {
+        if (day <= today) {
+          paid += amount;
+          paidFixedList.add(item);
+        } else {
+          upcoming += amount;
+          upcomingFixedList.add(item);
+        }
+      } else {
+        if (day <= today) {
+          paidVar += amount;
+          paidVarList.add(item);
+        } else {
+          upcomingVar += amount;
+          upcomingVarList.add(item);
+        }
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _paidFixedTotal = paid;
+        _upcomingFixedTotal = upcoming;
+        _paidVariableTotal = paidVar;
+        _upcomingVariableTotal = upcomingVar;
+        _paidFixedItems = paidFixedList;
+        _upcomingFixedItems = upcomingFixedList;
+        _paidVariableItems = paidVarList;
+        _upcomingVariableItems = upcomingVarList;
+      });
+    }
+  }
+
   Future<void> _loadAllBudgets() async {
     if (userId == null) return;
     try {
@@ -70,28 +141,18 @@ class _AnalysisState extends State<Analysis> {
     }
   }
 
-  // 클래스 멤버 변수로 고정지출 합계 변수 추가
   int fixedBudgetTotal = 0;
 
   Future<void> _getFixedItemsList() async {
     if (userId == null) return;
 
     try {
-      // 1. 'settings' 컬렉션의 모든 문서를 다 가져와 봅니다.
       final snapshot = await FirebaseFirestore.instance
           .collection('users')
           .doc(userId)
           .collection('settings')
           .get();
 
-      print("--- [settings 컬렉션 내부 문서 리스트] ---");
-      for (var doc in snapshot.docs) {
-        print("문서 ID: ${doc.id}"); // 여기에 찍히는 ID가 진짜 이름입니다!
-      }
-      print("---------------------------------------");
-
-      // 2. 위에서 찍힌 ID 중 하나를 골라 아래에서 사용합니다.
-      // 예를 들어 문서 ID가 '고정지출_items'가 아니라 'fixed_items'라면 아래를 수정하세요.
       final doc = await FirebaseFirestore.instance
           .collection('users')
           .doc(userId)
@@ -99,9 +160,7 @@ class _AnalysisState extends State<Analysis> {
           .doc('여기에_위에_찍힌_ID를_넣으세요')
           .get();
 
-      if (doc.exists) {
-        // ... 이후 로직
-      }
+      if (doc.exists) {}
     } catch (e) {
       print("에러 발생: $e");
     }
@@ -120,7 +179,6 @@ class _AnalysisState extends State<Analysis> {
     "모임비",
   ];
 
-  // 2. 고정지출 합계 계산 (이미 불러온 _budgetMap 활용)
   int _getFixedBudgetTotal() {
     int total = 0;
     _budgetMap.forEach((key, value) {
@@ -146,21 +204,20 @@ class _AnalysisState extends State<Analysis> {
     ).day;
     final int daysInLastMonth = DateTime(lastYear, lastMonth + 1, 0).day;
 
-    // 예산 로딩 중일 때는 에뮬레이터 먹통 방지를 위해 인디케이터 표시
     if (_isBudgetLoading) {
-      return const Scaffold(
-        backgroundColor: Colors.white,
-        body: Center(
+      return Scaffold(
+        backgroundColor: AppColors.background(context),
+        body: const Center(
           child: CircularProgressIndicator(color: AppColors.primary),
         ),
       );
     }
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
+        backgroundColor: AppColors.background(context),
+        surfaceTintColor: AppColors.background(context),
         scrolledUnderElevation: 0,
         elevation: 0,
         automaticallyImplyLeading: false,
@@ -176,17 +233,17 @@ class _AnalysisState extends State<Analysis> {
                       _selectedMonth = DateTime(currentYear, currentMonth - 1),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_left,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
               Text(
                 "$currentMonth월",
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   fontSize: 20,
                 ),
               ),
@@ -196,9 +253,9 @@ class _AnalysisState extends State<Analysis> {
                       _selectedMonth = DateTime(currentYear, currentMonth + 1),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_right,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
@@ -334,7 +391,19 @@ class _AnalysisState extends State<Analysis> {
                 ),
                 _buildFullDivider(),
                 _withPadding(_buildSectionTitle("자산 설정")),
-                _withPadding(_buildAssetSetting()),
+                _withPadding(
+                  _AssetSettingWidget(
+                    paidFixedItems: _paidFixedItems,
+                    upcomingFixedItems: _upcomingFixedItems,
+                    paidVariableItems: _paidVariableItems,
+                    upcomingVariableItems: _upcomingVariableItems,
+                    paidFixedTotal: _paidFixedTotal,
+                    upcomingFixedTotal: _upcomingFixedTotal,
+                    paidVariableTotal: _paidVariableTotal,
+                    upcomingVariableTotal: _upcomingVariableTotal,
+                  ),
+                ),
+
                 const SizedBox(height: 40),
               ],
             ),
@@ -362,7 +431,7 @@ class _AnalysisState extends State<Analysis> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Padding(
-                padding: EdgeInsets.only(left: 0, bottom: 5), // 텍스트는 왼쪽 끝에 붙음
+                padding: EdgeInsets.only(left: 0, bottom: 5),
                 child: Text(
                   "(만원)",
                   style: TextStyle(fontSize: 10, color: AppColors.secondary),
@@ -412,7 +481,7 @@ class _AnalysisState extends State<Analysis> {
       Container(
         height: 8,
         width: double.infinity,
-        color: AppColors.dividerColor,
+        color: AppColors.divider(context),
       ),
       const SizedBox(height: 20),
     ],
@@ -437,7 +506,6 @@ class _AnalysisState extends State<Analysis> {
     ],
   );
 
-  // 소비 습관
   Widget _buildHabitSection(int noExp, int total, int daysInMonth) {
     int div =
         (_selectedMonth.month == DateTime.now().month &&
@@ -454,19 +522,23 @@ class _AnalysisState extends State<Analysis> {
     );
   }
 
-  // 소비 습관
   Widget _habitBox(String t, String v, String s) => Expanded(
     child: Container(
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: BorderRadius.circular(10),
         border: Border.all(color: AppColors.borderColor),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(t, style: const TextStyle(fontSize: 12, color: Colors.black)),
+          Text(
+            t,
+            style: TextStyle(
+              fontSize: 12,
+              color: AppColors.textPrimary(context),
+            ),
+          ),
           Text(
             v,
             style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
@@ -481,7 +553,6 @@ class _AnalysisState extends State<Analysis> {
     ),
   );
 
-  // 카테고리별 지출
   Widget _buildCategoryAnalysis(List<MapEntry<String, int>> cats, int tot) {
     if (cats.isEmpty) return const Center(child: Text("데이터가 없습니다."));
 
@@ -507,7 +578,6 @@ class _AnalysisState extends State<Analysis> {
                 categoryName;
           }
 
-          // initState 단계에서 미리 긁어온 _budgetMap을 즉시 메모리에서 조회(O(1))합니다.
           int budgetAmount = _budgetMap[categoryName] ?? 0;
 
           return Padding(
@@ -588,9 +658,6 @@ class _AnalysisState extends State<Analysis> {
   }
 
   Widget _buildAssetSetting() {
-    int fixedUsed = _getUsedAmount('고정');
-    int fixedTotal = _getFixedBudgetTotal(); // 💡 위에서 만든 계산 함수 호출
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -598,38 +665,155 @@ class _AnalysisState extends State<Analysis> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             const Text(
-              "나간 고정지출",
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                color: AppColors.secondary,
-              ),
+              "고정지출",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
             Text(
-              "${nf.format(fixedUsed)}원",
-              style: const TextStyle(fontSize: 14),
+              "${nf.format(_paidFixedTotal + _upcomingFixedTotal)}원",
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: AppColors.pointColor,
+              ),
             ),
           ],
         ),
+        Divider(thickness: 1, color: AppColors.divider(context)),
+        const SizedBox(height: 4),
+
+        _buildExpenseRow(
+          label: "나간 고정지출",
+          amount: _paidFixedTotal,
+          isExpanded: _showPaidFixed,
+          items: _paidFixedItems,
+          onToggle: () => setState(() => _showPaidFixed = !_showPaidFixed),
+        ),
         const SizedBox(height: 8),
+
+        _buildExpenseRow(
+          label: "예정된 고정지출",
+          amount: _upcomingFixedTotal,
+          isExpanded: _showUpcomingFixed,
+          items: _upcomingFixedItems,
+          onToggle: () =>
+              setState(() => _showUpcomingFixed = !_showUpcomingFixed),
+        ),
+
+        const SizedBox(height: 20),
+
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             const Text(
-              "예정된 고정지출",
-              style: TextStyle(
-                fontSize: 15,
-                fontWeight: FontWeight.bold,
-                color: AppColors.secondary,
-              ),
+              "변동지출",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
             ),
-            // 💡 여기서 계산된 총합을 출력
             Text(
-              "${nf.format(fixedBudgetTotal)}원",
-              style: const TextStyle(fontSize: 14),
+              "${nf.format(_paidVariableTotal + _upcomingVariableTotal)}원",
+              style: const TextStyle(
+                fontSize: 14,
+                fontWeight: FontWeight.bold,
+                color: AppColors.pointColor,
+              ),
             ),
           ],
         ),
+        Divider(thickness: 1, color: AppColors.divider(context)),
+        const SizedBox(height: 4),
+
+        _buildExpenseRow(
+          label: "나간 변동지출",
+          amount: _paidVariableTotal,
+          isExpanded: _showPaidVariable,
+          items: _paidVariableItems,
+          onToggle: () =>
+              setState(() => _showPaidVariable = !_showPaidVariable),
+        ),
+        const SizedBox(height: 8),
+
+        _buildExpenseRow(
+          label: "예정된 변동지출",
+          amount: _upcomingVariableTotal,
+          isExpanded: _showUpcomingVariable,
+          items: _upcomingVariableItems,
+          onToggle: () =>
+              setState(() => _showUpcomingVariable = !_showUpcomingVariable),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExpenseRow({
+    required String label,
+    required int amount,
+    required bool isExpanded,
+    required List<Map<String, dynamic>> items,
+    required VoidCallback onToggle,
+  }) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(fontSize: 14, color: AppColors.secondary),
+            ),
+            Row(
+              children: [
+                Text(
+                  "${nf.format(amount)}원",
+                  style: const TextStyle(fontSize: 14),
+                ),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: items.isEmpty ? null : onToggle,
+                  child: Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 18,
+                    color: items.isEmpty
+                        ? AppColors.divider(context)
+                        : AppColors.secondary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        if (isExpanded)
+          Padding(
+            padding: const EdgeInsets.only(top: 6, left: 8),
+            child: Column(
+              children: items
+                  .map(
+                    (item) => Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 3),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            "${item['day']}일 · ${item['name']}",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.secondary,
+                            ),
+                          ),
+                          Text(
+                            "${nf.format(item['amount'])}원",
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.secondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
       ],
     );
   }
@@ -656,66 +840,16 @@ class _AnalysisState extends State<Analysis> {
     );
   }
 
-  // 실제 사용액 계산 (날짜 필터링)
   int _getUsedAmount(String type) {
-    // 예: dailyData 리스트를 순회하며 오늘까지의 지출을 합산
     return dailyData
         .where((item) => item['type'] == type)
         .fold(0, (sum, item) => sum + (item['amount'] as int));
   }
 
-  // 고정/변동 예산 합계 (이전에 불러온 _budgetMap 활용)
   int _getTotalBudget(String type) {
     return _budgetMap.entries
-        .where((e) => e.key.contains(type)) // '고정', '변동' 키워드 매칭
+        .where((e) => e.key.contains(type))
         .fold(0, (sum, e) => sum + e.value);
-  }
-
-  // 상위 3개 지출 리스트 (이미 날짜 필터링된 currentMonthExpenses에서 상위 3개 추출)
-  Widget _buildTop3List(List<Map<String, dynamic>> top3) {
-    if (top3.isEmpty) return const Center(child: Text("지출 내역이 없습니다."));
-    return Column(
-      children: top3.asMap().entries.map((entry) {
-        var data = entry.value;
-        String title =
-            data['place']?.toString() ?? data['title']?.toString() ?? "항목 없음";
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.borderColor),
-          ),
-          child: Row(
-            children: [
-              Text(
-                "${entry.key + 1}",
-                style: TextStyle(
-                  fontWeight: FontWeight.bold,
-                  color: AppColors.primary,
-                  fontSize: 16,
-                ),
-              ),
-              const SizedBox(width: 15),
-              Expanded(
-                child: Text(
-                  title,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 15),
-                ),
-              ),
-              Text(
-                "${nf.format(data['amount'] ?? 0)}원",
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
-              ),
-            ],
-          ),
-        );
-      }).toList(),
-    );
   }
 }
 
@@ -831,7 +965,7 @@ class LineChartPainter extends CustomPainter {
   }) {
     TextPainter(
         text: TextSpan(
-          text: text, // 💡 전달받은 text를 그대로 사용합니다.
+          text: text,
           style: const TextStyle(color: AppColors.secondary, fontSize: 10),
         ),
         textDirection: ui.TextDirection.ltr,
@@ -894,4 +1028,217 @@ class PieChartPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant PieChartPainter old) => true;
+}
+
+class _AssetSettingWidget extends StatefulWidget {
+  final List<Map<String, dynamic>> paidFixedItems;
+  final List<Map<String, dynamic>> upcomingFixedItems;
+  final List<Map<String, dynamic>> paidVariableItems;
+  final List<Map<String, dynamic>> upcomingVariableItems;
+  final int paidFixedTotal;
+  final int upcomingFixedTotal;
+  final int paidVariableTotal;
+  final int upcomingVariableTotal;
+
+  const _AssetSettingWidget({
+    required this.paidFixedItems,
+    required this.upcomingFixedItems,
+    required this.paidVariableItems,
+    required this.upcomingVariableItems,
+    required this.paidFixedTotal,
+    required this.upcomingFixedTotal,
+    required this.paidVariableTotal,
+    required this.upcomingVariableTotal,
+  });
+
+  @override
+  State<_AssetSettingWidget> createState() => _AssetSettingWidgetState();
+}
+
+class _AssetSettingWidgetState extends State<_AssetSettingWidget> {
+  final NumberFormat nf = NumberFormat('#,###');
+  bool _showPaidFixed = false;
+  bool _showUpcomingFixed = false;
+  bool _showPaidVariable = false;
+  bool _showUpcomingVariable = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "고정지출",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              "${nf.format(widget.paidFixedTotal + widget.upcomingFixedTotal)}원",
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.primary,
+              ),
+            ),
+          ],
+        ),
+        Divider(
+          thickness: 1,
+          color: AppColors.divider(context),
+        ),
+        const SizedBox(height: 4),
+        _buildExpenseRow(
+          label: "나간 고정지출",
+          amount: widget.paidFixedTotal,
+          isExpanded: _showPaidFixed,
+          items: widget.paidFixedItems,
+          onToggle: () => setState(() => _showPaidFixed = !_showPaidFixed),
+        ),
+        const SizedBox(height: 8),
+        _buildExpenseRow(
+          label: "예정된 고정지출",
+          amount: widget.upcomingFixedTotal,
+          isExpanded: _showUpcomingFixed,
+          items: widget.upcomingFixedItems,
+          onToggle: () =>
+              setState(() => _showUpcomingFixed = !_showUpcomingFixed),
+        ),
+        const SizedBox(height: 20),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            const Text(
+              "변동지출",
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              "${nf.format(widget.paidVariableTotal + widget.upcomingVariableTotal)}원",
+              style: const TextStyle(
+                fontSize: 15,
+                fontWeight: FontWeight.bold,
+                color: AppColors.primary,
+              ),
+            ),
+          ],
+        ),
+        Divider(thickness: 1, color: AppColors.divider(context)),
+        const SizedBox(height: 4),
+        _buildExpenseRow(
+          label: "나간 변동지출",
+          amount: widget.paidVariableTotal,
+          isExpanded: _showPaidVariable,
+          items: widget.paidVariableItems,
+          onToggle: () =>
+              setState(() => _showPaidVariable = !_showPaidVariable),
+        ),
+        const SizedBox(height: 8),
+        _buildExpenseRow(
+          label: "예정된 변동지출",
+          amount: widget.upcomingVariableTotal,
+          isExpanded: _showUpcomingVariable,
+          items: widget.upcomingVariableItems,
+          onToggle: () =>
+              setState(() => _showUpcomingVariable = !_showUpcomingVariable),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildExpenseRow({
+    required String label,
+    required int amount,
+    required bool isExpanded,
+    required List<Map<String, dynamic>> items,
+    required VoidCallback onToggle,
+  }) {
+    return Column(
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 14,
+                color: AppColors.secondary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            Row(
+              children: [
+                Text(
+                  "${nf.format(amount)}원",
+                  style: const TextStyle(fontSize: 14),
+                ),
+                const SizedBox(width: 4),
+                GestureDetector(
+                  onTap: items.isEmpty ? null : onToggle,
+                  child: Icon(
+                    isExpanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    size: 18,
+                    color: items.isEmpty
+                        ? AppColors.divider(context)
+                        : AppColors.secondary,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        if (isExpanded)
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
+            child: Column(
+              children: items
+                  .map(
+                    (item) => Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.divider(context),
+                        borderRadius: BorderRadius.circular(5),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            RichText(
+                              text: TextSpan(
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.secondary,
+                                ),
+                                children: [
+                                  TextSpan(text: "${item['day']}일 · "),
+                                  TextSpan(
+                                    text: "${item['name']}",
+                                    style: TextStyle(
+                                      color: AppColors.textPrimary(context),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+
+                            Text(
+                              "${nf.format(item['amount'])}원",
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: AppColors.secondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                  .toList(),
+            ),
+          ),
+      ],
+    );
+  }
 }
