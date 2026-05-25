@@ -16,26 +16,46 @@ class _AssetState extends State<Asset> {
   final userId = FirebaseAuth.instance.currentUser?.uid;
   final NumberFormat nf = NumberFormat('#,###');
 
-  // 현재 보고 있는 기준 날짜 (월 이동 기능용)
   DateTime _selectedMonth = DateTime.now();
+  List<Map<String, dynamic>> _recurringItems = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadRecurringExpenses();
+  }
+
+  Future<void> _loadRecurringExpenses() async {
+    if (userId == null) return;
+    final snapshot = await FirebaseFirestore.instance
+        .collection('users')
+        .doc(userId)
+        .collection('recurring_expenses')
+        .get();
+
+    setState(() {
+      _recurringItems = snapshot.docs
+          .map((doc) => doc.data() as Map<String, dynamic>)
+          .toList();
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white, // 전체 배경 흰색
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
+        backgroundColor: AppColors.background(context),
+        surfaceTintColor: AppColors.background(context),
         scrolledUnderElevation: 0,
         elevation: 0,
-        automaticallyImplyLeading: false, // 기본 뒤로가기 버튼 공간 제거
+        automaticallyImplyLeading: false,
         titleSpacing: 0,
         title: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24.0), // 전체 24px 여백
+          padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // 1. 왼쪽 버튼
               GestureDetector(
                 onTap: () => setState(
                   () => _selectedMonth = DateTime(
@@ -44,24 +64,22 @@ class _AssetState extends State<Asset> {
                   ),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_left,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
 
-              // 2. 중앙 월 표시
               Text(
                 "${_selectedMonth.month}월",
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   fontSize: 18,
                 ),
               ),
 
-              // 3. 오른쪽 버튼
               GestureDetector(
                 onTap: () => setState(
                   () => _selectedMonth = DateTime(
@@ -70,9 +88,9 @@ class _AssetState extends State<Asset> {
                   ),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_right,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
@@ -109,9 +127,9 @@ class _AssetState extends State<Asset> {
 
           int totalCash = 0;
           int totalCard = 0;
-          int totalTransfer = 0; // 💡 이체 누적 자산 상태 관리를 위한 변수 추가
-          int totalExpense = 0; // 이번 달 총 지출 (지출 + 이체)
-          int lastMonthSameDayExp = 0; // 지난달 오늘까지의 지출
+          int totalTransfer = 0;
+          int totalExpense = 0;
+          int lastMonthSameDayExp = 0;
 
           List<DocumentSnapshot> monthlyDocs = [];
           DateTime now = DateTime.now();
@@ -132,15 +150,12 @@ class _AssetState extends State<Asset> {
 
               if (date.year == _selectedMonth.year &&
                   date.month == _selectedMonth.month) {
-                // 💡 1. 자산 연산 로직에 '이체' 조건 통합 반영
                 if (type == '지출' || type == '이체') {
-                  totalExpense += amount; // 총 지출 풀에 이체도 포함시킴
+                  totalExpense += amount;
 
                   if (type == '이체') {
-                    // 이체 타입이면 이체 자산에서 누적 차감 형태 기록
                     totalTransfer -= amount;
                   } else {
-                    // 일반 지출인 경우 결제 수단 분류
                     if (paymentMethod == '현금') {
                       totalCash -= amount;
                     } else {
@@ -156,7 +171,6 @@ class _AssetState extends State<Asset> {
                 }
               }
 
-              // 지난달 데이터 비교 로직 (이체도 지출 성격이므로 함께 비교군에 포함)
               DateTime lastMonth = DateTime(
                 _selectedMonth.year,
                 _selectedMonth.month - 1,
@@ -176,7 +190,7 @@ class _AssetState extends State<Asset> {
               children: [
                 _buildAssetHeader(
                   userId,
-                  totalCash + totalCard + totalTransfer, // 💡 총 자산에 이체분도 결합
+                  totalCash + totalCard + totalTransfer,
                   totalExpense,
                   lastMonthSameDayExp,
                 ),
@@ -186,7 +200,7 @@ class _AssetState extends State<Asset> {
                   totalCash,
                   totalCard,
                   totalTransfer,
-                ), // 💡 파라미터 전달 확장
+                ),
                 const SizedBox(height: 10),
                 _buildFullDivider(),
                 _buildSectionHeader("카드", showMore: true),
@@ -194,7 +208,7 @@ class _AssetState extends State<Asset> {
                 const SizedBox(height: 10),
                 _buildFullDivider(),
                 _buildSectionHeader("${_selectedMonth.month}월 거래 내역"),
-                _buildMonthlyTransactions(monthlyDocs),
+                _buildMonthlyTransactions(monthlyDocs, _recurringItems),
                 const SizedBox(height: 30),
               ],
             ),
@@ -250,10 +264,10 @@ class _AssetState extends State<Asset> {
               const SizedBox(height: 8),
               Text(
                 "${nf.format(totalAsset)}원",
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 20,
                   fontWeight: FontWeight.bold,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                 ),
               ),
               const SizedBox(height: 16),
@@ -268,10 +282,8 @@ class _AssetState extends State<Asset> {
                   borderRadius: BorderRadius.circular(10),
                 ),
                 child: Row(
-                  // 💡 만약 전체 컨테이너 안에서 좌측 정렬을 유지하고 싶다면 추가
                   mainAxisAlignment: MainAxisAlignment.start,
                   children: [
-                    // ✨ Expanded를 지우고 Text만 남깁니다.
                     Text(
                       message,
                       style: TextStyle(
@@ -280,7 +292,7 @@ class _AssetState extends State<Asset> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SizedBox(width: 5), // 💡 텍스트와 이모지 사이의 적당한 간격 지정
+                    const SizedBox(width: 5),
                     BouncingText(
                       text: emoji,
                       style: const TextStyle(fontSize: 16),
@@ -301,7 +313,7 @@ class _AssetState extends State<Asset> {
       Container(
         height: 8,
         width: double.infinity,
-        color: AppColors.dividerColor,
+        color: AppColors.divider(context),
       ),
       const SizedBox(height: 20),
     ],
@@ -327,13 +339,11 @@ class _AssetState extends State<Asset> {
     );
   }
 
-  // 💡 자산 구성 두 줄 레이아웃 (현금·카드: 50%씩 / 이체: 100% 꽉 채움)
   Widget _buildAssetComposition(int cash, int card, int transfer) {
     return Padding(
       padding: AppLayout.defaultPadding,
       child: Column(
         children: [
-          // 첫 번째 줄: 현금 & 카드 (각각 50%씩 반반 분할)
           Row(
             children: [
               _buildCompItem("현금", cash, AppColors.pointColor),
@@ -341,8 +351,7 @@ class _AssetState extends State<Asset> {
               _buildCompItem("카드", card, AppColors.primary),
             ],
           ),
-          const SizedBox(height: 10), // 줄 사이 간격
-          // 두 번째 줄: 이체 (가로 100% 꽉 채우기 💡)
+          const SizedBox(height: 10),
           Row(
             children: [
               _buildCompItem("이체", transfer, Colors.green),
@@ -353,7 +362,6 @@ class _AssetState extends State<Asset> {
     );
   }
 
-  // 💡 테두리와 내부 여백이 추가된 아이템 빌더
   Widget _buildCompItem(
     String title,
     int amount,
@@ -364,13 +372,11 @@ class _AssetState extends State<Asset> {
         padding: const EdgeInsets.symmetric(
           horizontal: 20,
           vertical: 15,
-        ), // 내부 여백 추가
+        ),
         decoration: BoxDecoration(
-          color: Colors.white,
           borderRadius: BorderRadius.circular(10),
-          // 깔끔한 연한 회색 테두리 추가 💡
           border: Border.all(
-            color: AppColors.borderColor,
+            color: AppColors.divider(context),
             width: 1,
           ),
         ),
@@ -383,8 +389,8 @@ class _AssetState extends State<Asset> {
                 const SizedBox(width: 6),
                 Text(
                   title,
-                  style: const TextStyle(
-                    color: Colors.black,
+                  style: TextStyle(
+                    color: AppColors.textPrimary(context),
                     fontSize: 14,
                   ),
                 ),
@@ -393,10 +399,10 @@ class _AssetState extends State<Asset> {
             const SizedBox(height: 8),
             Text(
               "${nf.format(amount)}원",
-              style: const TextStyle(
+              style: TextStyle(
                 fontWeight: FontWeight.bold,
-                fontSize: 16, // 금액을 좀 더 인지하기 쉽게 16으로 살짝 키웠습니다.
-                color: Colors.black,
+                fontSize: 16,
+                color: AppColors.textPrimary(context),
               ),
             ),
           ],
@@ -430,7 +436,6 @@ class _AssetState extends State<Asset> {
           for (var bank in registeredBanks) bank: 0,
         };
 
-        // 💡 [문법 오류 전면 수정] 루프 내부에 잘못 고립되어 있던 onPressed 제거 및 데이터 파싱 정형화
         for (var doc in monthlyDocs) {
           var data = doc.data() as Map<String, dynamic>;
           int amount = data['amount'] ?? 0;
@@ -440,7 +445,6 @@ class _AssetState extends State<Asset> {
               .trim();
 
           String? belongingBank;
-          // registeredBanks 목록 중 결제수단 이름에 카드사명이 포함되어 있는지 1차 검증 (로컬 백업 매칭)
           for (var bank in registeredBanks) {
             if (recordCardName.contains(bank.replaceAll('카드', ''))) {
               belongingBank = bank;
@@ -563,7 +567,17 @@ class _AssetState extends State<Asset> {
                 width: 30,
                 height: 30,
                 clipBehavior: Clip.antiAlias,
-                decoration: const BoxDecoration(shape: BoxShape.circle),
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.secondary.withOpacity(0.1),
+                      blurRadius: 5,
+                      offset: const Offset(0, 2),
+                    ),
+                  ],
+                ),
+
                 child: logoUrl != null
                     ? Image.network(
                         logoUrl,
@@ -591,8 +605,51 @@ class _AssetState extends State<Asset> {
     );
   }
 
-  Widget _buildMonthlyTransactions(List<DocumentSnapshot> monthlyDocs) {
-    if (monthlyDocs.isEmpty) {
+  Widget _buildMonthlyTransactions(
+    List<DocumentSnapshot> monthlyDocs,
+    List<Map<String, dynamic>> recurringItems,
+  ) {
+    final DateTime now = DateTime.now();
+    final bool isCurrentMonth =
+        _selectedMonth.year == now.year && _selectedMonth.month == now.month;
+
+    List<Map<String, dynamic>> recurringAsDocs = [];
+    for (var item in recurringItems) {
+      var dayData = item['day'] ?? '1일';
+      int day = (dayData is String)
+          ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+          : (dayData as int);
+
+      if (isCurrentMonth && day > now.day) continue;
+
+      String expenseType = item['expenseType'] ?? '고정지출';
+      String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+
+      recurringAsDocs.add({
+        'place': item['name'] ?? '',
+        'amount': item['amount'] ?? 0,
+        'type': '지출',
+        'category': {'name': expenseType, 'icon': icon},
+        'bankName': '',
+        'date': DateTime(
+          _selectedMonth.year,
+          _selectedMonth.month,
+          day,
+        ),
+        'isRecurring': true,
+      });
+    }
+
+    List<Map<String, dynamic>> allItems = [
+      ...monthlyDocs.map((doc) {
+        var data = doc.data() as Map<String, dynamic>;
+        data['date'] = (data['date'] as Timestamp).toDate();
+        return data;
+      }),
+      ...recurringAsDocs,
+    ];
+
+    if (allItems.isEmpty) {
       return const Center(
         child: Padding(
           padding: EdgeInsets.symmetric(vertical: 20),
@@ -601,18 +658,15 @@ class _AssetState extends State<Asset> {
       );
     }
 
-    Map<String, List<DocumentSnapshot>> groupedDocs = {};
-    for (var doc in monthlyDocs) {
-      DateTime date = (doc['date'] as Timestamp).toDate();
+    Map<String, List<Map<String, dynamic>>> groupedItems = {};
+    for (var item in allItems) {
+      DateTime date = item['date'] as DateTime;
       String dayKey = DateFormat('MM월 dd일').format(date);
-
-      if (!groupedDocs.containsKey(dayKey)) {
-        groupedDocs[dayKey] = [];
-      }
-      groupedDocs[dayKey]!.add(doc);
+      groupedItems[dayKey] ??= [];
+      groupedItems[dayKey]!.add(item);
     }
 
-    var sortedKeys = groupedDocs.keys.toList()..sort((a, b) => b.compareTo(a));
+    var sortedKeys = groupedItems.keys.toList()..sort((a, b) => b.compareTo(a));
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 24.0),
@@ -621,15 +675,12 @@ class _AssetState extends State<Asset> {
           int dayIncome = 0;
           int dayExpense = 0;
 
-          for (var doc in groupedDocs[dateLabel]!) {
-            final data = doc.data() as Map<String, dynamic>;
-            int amount = data['amount'] ?? 0;
-            String type = data['type'] ?? '지출';
-
+          for (var item in groupedItems[dateLabel]!) {
+            int amount = item['amount'] ?? 0;
+            String type = item['type'] ?? '지출';
             if (type == '수입') {
               dayIncome += amount;
             } else if (type == '지출' || type == '이체') {
-              // 💡 하단 일별 요약 정보에도 이체액 병합
               dayExpense += amount;
             }
           }
@@ -642,9 +693,9 @@ class _AssetState extends State<Asset> {
                 children: [
                   Text(
                     dateLabel,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 14,
-                      color: Colors.black,
+                      color: AppColors.textPrimary(context),
                     ),
                   ),
                   Row(
@@ -657,14 +708,12 @@ class _AssetState extends State<Asset> {
                             color: AppColors.primary,
                           ),
                         ),
-                      if (dayIncome > 0 && dayExpense > 0)
-                        const SizedBox(width: 4),
                       if (dayExpense > 0)
                         Text(
                           "-${nf.format(dayExpense)}원",
-                          style: const TextStyle(
+                          style: TextStyle(
                             fontSize: 14,
-                            color: Colors.black,
+                            color: AppColors.textPrimary(context),
                           ),
                         ),
                     ],
@@ -672,15 +721,12 @@ class _AssetState extends State<Asset> {
                 ],
               ),
               const Divider(thickness: 0.5),
-
-              ...groupedDocs[dateLabel]!.map((doc) {
-                final data = doc.data() as Map<String, dynamic>;
-                String type = data['type'] ?? '지출';
+              ...groupedItems[dateLabel]!.map((item) {
+                String type = item['type'] ?? '지출';
                 bool isIncome = type == '수입';
-
-                String categoryName = data['category']?['name'] ?? "기타";
+                String categoryName = item['category']?['name'] ?? "기타";
                 String bankName =
-                    data['bankName'] ?? data['paymentMethod'] ?? "";
+                    item['bankName'] ?? item['paymentMethod'] ?? "";
 
                 return ListTile(
                   contentPadding: EdgeInsets.zero,
@@ -693,12 +739,12 @@ class _AssetState extends State<Asset> {
                     ),
                     alignment: Alignment.center,
                     child: Text(
-                      data['category']?['icon'] ?? "💰",
+                      item['category']?['icon'] ?? "💰",
                       style: const TextStyle(fontSize: 20),
                     ),
                   ),
                   title: Text(
-                    data['place'] ?? "사용처 없음",
+                    item['place'] ?? "사용처 없음",
                     style: const TextStyle(
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -714,9 +760,11 @@ class _AssetState extends State<Asset> {
                     ),
                   ),
                   trailing: Text(
-                    "${isIncome ? '+' : '-'}${nf.format(data['amount'])}원",
+                    "${isIncome ? '+' : '-'}${nf.format(item['amount'])}원",
                     style: TextStyle(
-                      color: isIncome ? AppColors.primary : Colors.black,
+                      color: isIncome
+                          ? AppColors.primary
+                          : AppColors.textPrimary(context),
                       fontSize: 16,
                       fontWeight: FontWeight.w600,
                     ),
@@ -782,5 +830,3 @@ class _BouncingTextState extends State<BouncingText>
     );
   }
 }
-
-// BouncingText 위젯 소스코드는 변동 사항 없이 하단 유지됩니다.
