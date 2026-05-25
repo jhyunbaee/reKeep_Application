@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'auth_service.dart'; // 방금 만든 파일을 불러옵니다.
+import 'auth_service.dart';
 
 class SignUp extends StatefulWidget {
   const SignUp({super.key});
@@ -9,14 +9,12 @@ class SignUp extends StatefulWidget {
 }
 
 class _SignUpState extends State<SignUp> {
-  // 1. 입력값을 받아올 컨트롤러들
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _nameController = TextEditingController();
 
-  // 2. 버튼을 눌렀을 때 실행될 로직을 여기에 넣습니다.
   void _handleSignUp() async {
-    print("회원가입 시도 시작..."); // 1. 함수가 실행되는지 확인
+    print("회원가입 시도 시작...");
 
     AuthService authService = AuthService();
 
@@ -27,9 +25,8 @@ class _SignUpState extends State<SignUp> {
         name: _nameController.text,
       );
 
-      print("결과: $result"); // 2. 서비스로부터 받은 결과 출력
+      print("결과: $result");
 
-      // 3. 화면에 팝업 띄우기
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(result == "success" ? "회원가입 성공!" : result)),
@@ -58,9 +55,8 @@ class _SignUpState extends State<SignUp> {
             obscureText: true,
           ),
 
-          // 3. 실제 버튼 위젯의 onPressed에 연결합니다.
           ElevatedButton(
-            onPressed: _handleSignUp, // 위에서 만든 함수를 연결!
+            onPressed: _handleSignUp,
             child: Text("회원가입하기"),
           ),
         ],

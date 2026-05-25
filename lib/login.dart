@@ -1,7 +1,13 @@
+import 'dart:io';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_rekeep/auth_service.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 import 'package:flutter_rekeep/home.dart';
+import 'package:image_picker/image_picker.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class Login extends StatefulWidget {
   const Login({super.key});
@@ -10,7 +16,6 @@ class Login extends StatefulWidget {
   State<Login> createState() => _LoginState();
 }
 
-// _LoginScreenState 클래스 상단에 추가
 final TextEditingController _emailController = TextEditingController();
 final TextEditingController _passwordController = TextEditingController();
 final TextEditingController _nameController = TextEditingController();
@@ -18,7 +23,24 @@ final TextEditingController _nicknameController = TextEditingController();
 final TextEditingController _phoneController = TextEditingController();
 
 class _LoginState extends State<Login> {
-  bool isLogin = true; // 로그인/회원가입 상태 전환
+  bool isLogin = true;
+  bool isRememberId = false;
+
+  bool _isNicknameChecked = true;
+  String _lastCheckedNickname = "";
+
+  File? _selectedImage;
+  final ImagePicker _picker = ImagePicker();
+
+  Future<void> _loadSavedId() async {
+    final prefs = await SharedPreferences.getInstance();
+    setState(() {
+      isRememberId = prefs.getBool('isRememberId') ?? false;
+      if (isRememberId) {
+        _emailController.text = prefs.getString('savedEmail') ?? "";
+      }
+    });
+  }
 
   void _handleSignUp() async {
     AuthService authService = AuthService();
@@ -32,16 +54,12 @@ class _LoginState extends State<Login> {
     if (!mounted) return;
 
     if (result == "success") {
-      // 1. 성공 메시지 표시
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("회원가입 성공! 로그인해주세요.")),
       );
 
-      // 2. 로그인 모드로 전환 및 불필요한 필드(이름 등) 초기화
       setState(() {
         isLogin = true;
-        // 여기서 _emailController.text는 회원가입 때 쓴 값이 그대로 남아있어야 합니다.
-        // 만약 이름이 뜬다면, _buildLoginFields에서 컨트롤러를 잘못 연결했을 확률이 커요.
         _nameController.clear();
         _nicknameController.clear();
         _phoneController.clear();
@@ -53,30 +71,47 @@ class _LoginState extends State<Login> {
     }
   }
 
-  // login.dart 내의 _LoginState 클래스
   @override
   void initState() {
     super.initState();
-    // 페이지가 로드될 때마다 컨트롤러 비우기
-    _emailController.clear();
-    _passwordController.clear();
-    _nameController.clear();
-    _nicknameController.clear();
-    _phoneController.clear();
+    _initializeFields();
+  }
+
+  Future<void> _initializeFields() async {
+    await _loadSavedId();
+
+    if (!isRememberId) {
+      _emailController.clear();
+      _passwordController.clear();
+      _nameController.clear();
+      _nicknameController.clear();
+      _phoneController.clear();
+    }
+  }
+
+  Future<void> _pickImage() async {
+    final XFile? pickedFile = await _picker.pickImage(
+      source: ImageSource.gallery,
+      imageQuality: 50,
+    );
+    if (pickedFile != null) {
+      setState(() {
+        _selectedImage = File(pickedFile.path);
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.background(context),
         elevation: 0,
-        // 1. 앱바 조건부 렌더링 (로그인: X버튼+reKeep / 회원가입: 뒤로가기+텍스트)
         leading: IconButton(
           icon: Icon(
             isLogin ? Icons.close : Icons.arrow_back,
-            color: Colors.black,
+            color: AppColors.textPrimary(context),
           ),
           onPressed: () {
             if (isLogin) {
@@ -89,7 +124,7 @@ class _LoginState extends State<Login> {
         title: Text(
           isLogin ? "reKeep" : "회원가입",
           style: TextStyle(
-            color: isLogin ? AppColors.primary : Colors.black,
+            color: isLogin ? AppColors.primary : AppColors.textPrimary(context),
             fontWeight: FontWeight.bold,
             fontSize: isLogin ? 22 : 18,
           ),
@@ -103,64 +138,60 @@ class _LoginState extends State<Login> {
           children: [
             if (isLogin) ..._buildLoginFields() else ..._buildSignUpFields(),
 
-            const SizedBox(height: 40),
+            const SizedBox(height: 30),
 
-            // 4. 버튼 (둥글게 10px)
-            ElevatedButton(
-              // login.dart의 ElevatedButton 내부
-              onPressed: () async {
-                if (isLogin) {
-                  // 1. AuthService 인스턴스를 통해 로그인 함수 호출
-                  String result = await AuthService().loginUser(
-                    email: _emailController.text.trim(),
-                    password: _passwordController.text.trim(),
-                  );
-
-                  if (result == "success") {
-                    // 2. 로그인 성공 시 홈으로 이동
-                    if (!context.mounted) return;
-                    Navigator.pushAndRemoveUntil(
-                      context,
-                      MaterialPageRoute(builder: (context) => const Home()),
-                      (route) => false,
+            SizedBox(
+              width: double.infinity,
+              height: 55,
+              child: ElevatedButton(
+                onPressed: () async {
+                  if (isLogin) {
+                    String result = await AuthService().loginUser(
+                      email: _emailController.text.trim(),
+                      password: _passwordController.text.trim(),
                     );
+
+                    if (result == "success") {
+                      if (!context.mounted) return;
+                      Navigator.pushAndRemoveUntil(
+                        context,
+                        MaterialPageRoute(builder: (context) => const Home()),
+                        (route) => false,
+                      );
+                    } else {
+                      if (!context.mounted) return;
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(content: Text(result)),
+                      );
+                    }
                   } else {
-                    // 3. 실패 시 에러 메시지 팝업
-                    if (!context.mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text(result)),
-                    );
+                    _handleSignUp();
                   }
-                } else {
-                  _handleSignUp();
-                }
-              },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
-                elevation: 0,
-                padding: const EdgeInsets.symmetric(vertical: 16),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(10),
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                  foregroundColor: AppColors.background(context),
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                  ),
                 ),
-              ),
-              child: Text(
-                isLogin ? "로그인" : "회원가입 완료",
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+                child: Text(
+                  isLogin ? "로그인" : "가입하기",
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 30),
 
-            // 5. 하단 전환 문구
             Center(
               child: GestureDetector(
                 onTap: () {
                   setState(() {
                     isLogin = !isLogin;
-                    // 모드를 바꿀 때 입력했던 내용들을 싹 지워줌
                     _emailController.clear();
                     _passwordController.clear();
                     _nameController.clear();
@@ -170,7 +201,10 @@ class _LoginState extends State<Login> {
                 },
                 child: RichText(
                   text: TextSpan(
-                    style: const TextStyle(color: Colors.black54, fontSize: 14),
+                    style: TextStyle(
+                      color: AppColors.textPrimary(context),
+                      fontSize: 14,
+                    ),
                     children: [
                       TextSpan(
                         text: isLogin ? "아직 계정이 없으신가요? " : "이미 계정이 있으신가요? ",
@@ -194,34 +228,111 @@ class _LoginState extends State<Login> {
     );
   }
 
-  // --- 로그인 입력폼 ---
   List<Widget> _buildLoginFields() {
     return [
       _buildLabel("이메일"),
       _buildCustomTextField(
         hint: "이메일을 입력해주세요",
         icon: Icons.email_outlined,
-        controller: _emailController, // 반드시 _emailController 연결!
+        controller: _emailController,
       ),
-      const SizedBox(height: 24),
+      const SizedBox(height: 20),
       _buildLabel("비밀번호"),
       _buildCustomTextField(
         hint: "비밀번호를 입력해주세요",
         icon: Icons.lock_outline,
         isPassword: true,
-        controller: _passwordController, // 반드시 _passwordController 연결!
+        controller: _passwordController,
+      ),
+
+      Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Row(
+            children: [
+              SizedBox(
+                width: 24,
+                height: 24,
+                child: Checkbox(
+                  value: isRememberId,
+                  onChanged: (bool? val) async {
+                    final prefs = await SharedPreferences.getInstance();
+
+                    setState(() {
+                      isRememberId = val ?? false;
+                    });
+
+                    if (isRememberId) {
+                      if (_emailController.text.isNotEmpty) {
+                        await prefs.setString(
+                          'savedEmail',
+                          _emailController.text,
+                        );
+                        await prefs.setBool('isRememberId', true);
+                      } else {
+                        setState(() => isRememberId = false);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text("이메일을 먼저 입력해주세요.")),
+                        );
+                      }
+                    } else {
+                      await prefs.remove('savedEmail');
+                      await prefs.setBool('isRememberId', false);
+                    }
+                  },
+                  activeColor: AppColors.primary,
+                ),
+              ),
+              const SizedBox(width: 5),
+              const Text("아이디 저장", style: TextStyle(fontSize: 13)),
+            ],
+          ),
+
+          TextButton(
+            onPressed: () async {
+              if (_emailController.text.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("아이디 찾기/비밀번호 재설정을 위해 이메일을 입력해주세요."),
+                  ),
+                );
+                return;
+              }
+
+              try {
+                await FirebaseAuth.instance.sendPasswordResetEmail(
+                  email: _emailController.text,
+                );
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("입력하신 이메일로 비밀번호 재설정 메일을 보냈습니다."),
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("오류: ${e.toString()}")),
+                );
+              }
+            },
+            child: const Text(
+              "아이디/비밀번호 찾기",
+              style: TextStyle(color: Colors.grey),
+            ),
+          ),
+        ],
       ),
     ];
   }
 
-  // --- 2. 회원가입 입력폼 (순서: 이름, 닉네임, 휴대전화, 이메일, 비밀번호) ---
   List<Widget> _buildSignUpFields() {
     return [
       _buildLabel("이름"),
       _buildCustomTextField(
         hint: "이름을 입력해주세요",
         controller: _nameController,
-      ), // 연결
+      ),
       const SizedBox(height: 20),
 
       _buildLabel("닉네임"),
@@ -232,44 +343,56 @@ class _LoginState extends State<Login> {
               hint: "닉네임을 입력해주세요",
               controller: _nicknameController,
             ),
-          ), // 연결
-          const SizedBox(width: 8), // 4. 중복확인 버튼 (가로 20%, 색상 primary, 높이 동일)
+          ),
+          const SizedBox(width: 8),
           SizedBox(
             width: MediaQuery.of(context).size.width * 0.22,
-            height: 50, // 입력폼과 동일한 높이
+            height: 55,
             child: ElevatedButton(
-              onPressed: () {},
-              style: ElevatedButton.styleFrom(
+              onPressed: _checkNicknameDuplicate,
+              style: OutlinedButton.styleFrom(
                 backgroundColor: AppColors.primary,
-                foregroundColor: Colors.white,
+                foregroundColor: AppColors.background(context),
                 elevation: 0,
                 shape: RoundedRectangleBorder(
                   borderRadius: BorderRadius.circular(10),
                 ),
                 padding: EdgeInsets.zero,
               ),
-              child: const Text(
+              child: Text(
                 "중복확인",
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                style: TextStyle(
+                  color: AppColors.background(context),
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
           ),
         ],
       ),
+      if (!_isNicknameChecked)
+        const Padding(
+          padding: EdgeInsets.only(top: 8, left: 4),
+          child: Text(
+            "닉네임 중복 확인이 필요합니다.",
+            style: TextStyle(color: AppColors.pointColor, fontSize: 12),
+          ),
+        ),
+
       const SizedBox(height: 20),
 
       _buildLabel("휴대전화"),
       _buildCustomTextField(
         hint: "'-' 없이 입력해주세요",
         controller: _phoneController,
-      ), // 연결
+      ),
       const SizedBox(height: 20),
 
       _buildLabel("이메일"),
       _buildCustomTextField(
         hint: "이메일을 입력해주세요",
         controller: _emailController,
-      ), // 연결
+      ),
       const SizedBox(height: 20),
 
       _buildLabel("비밀번호"),
@@ -277,13 +400,40 @@ class _LoginState extends State<Login> {
         hint: "비밀번호를 입력해주세요",
         isPassword: true,
         controller: _passwordController,
-      ), // 연결
+      ),
     ];
+  }
+
+  void _checkNicknameDuplicate() async {
+    String nickname = _nicknameController.text.trim();
+    if (nickname.isEmpty) return;
+
+    final result = await FirebaseFirestore.instance
+        .collection('users')
+        .where('nickname', isEqualTo: nickname)
+        .get();
+
+    if (result.docs.isEmpty || nickname == _lastCheckedNickname) {
+      setState(() {
+        _isNicknameChecked = true;
+        _lastCheckedNickname = nickname;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("사용 가능한 닉네임입니다.")),
+      );
+    } else {
+      setState(() {
+        _isNicknameChecked = false;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("이미 사용 중인 닉네임입니다.")),
+      );
+    }
   }
 
   Widget _buildLabel(String text) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 8.0),
+      padding: const EdgeInsets.only(bottom: 5),
       child: Text(
         text,
         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
@@ -291,31 +441,33 @@ class _LoginState extends State<Login> {
     );
   }
 
-  // 3. 입력폼 수정 (아이콘 조건부 삭제, 테두리 없음, 회색 배경)
   Widget _buildCustomTextField({
     required String hint,
-    TextEditingController? controller, // 1. 컨트롤러 매개변수 추가
+    TextEditingController? controller,
     IconData? icon,
     bool isPassword = false,
   }) {
     return Container(
-      height: 50,
+      height: 55,
       decoration: BoxDecoration(
-        color: AppColors.fieldColor,
+        color: AppColors.divider(context),
         borderRadius: BorderRadius.circular(10),
       ),
       child: TextFormField(
-        controller: controller, // 2. 여기에 컨트롤러를 연결!!
+        controller: controller,
         obscureText: isPassword,
+        autofillHints: isPassword
+            ? [AutofillHints.password]
+            : [AutofillHints.email],
+        enableSuggestions: !isPassword,
         decoration: InputDecoration(
-          // ... 기존 코드 동일 ...
           prefixIcon: isLogin && icon != null
-              ? Icon(icon, color: AppColors.fieldTextColor, size: 20)
+              ? Icon(icon, color: AppColors.secondary, size: 20)
               : null,
           hintText: hint,
           hintStyle: const TextStyle(
-            color: AppColors.fieldTextColor,
-            fontSize: 14,
+            color: AppColors.secondary,
+            fontSize: 15,
           ),
           border: InputBorder.none,
           contentPadding: const EdgeInsets.symmetric(
