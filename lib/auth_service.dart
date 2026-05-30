@@ -1,5 +1,7 @@
-import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:convert';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:google_sign_in/google_sign_in.dart';
 
 class AuthService {
   final FirebaseAuth _auth = FirebaseAuth.instance;
@@ -9,6 +11,7 @@ class AuthService {
     required String email,
     required String password,
     required String name,
+    String nickname = '',
   }) async {
     String result = "에러가 발생했습니다.";
     try {
@@ -22,10 +25,10 @@ class AuthService {
           'uid': cred.user!.uid,
           'email': email,
           'name': name,
-          'nickname': name,
+          'nickname': nickname.isNotEmpty ? nickname : name,
           'createdAt': DateTime.now(),
         });
-        result = "success";
+        result = "success:${cred.user!.uid}";
       } else {
         result = "모든 필드를 입력해주세요.";
       }
@@ -46,8 +49,48 @@ class AuthService {
   }
 
   Future<void> signOut() async {
+    await GoogleSignIn().signOut();
     await _auth.signOut();
   }
+
+  // 구글 로그인
+  Future<String> signInWithGoogle() async {
+    try {
+      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+      if (googleUser == null) return "cancelled";
+
+      final GoogleSignInAuthentication googleAuth =
+          await googleUser.authentication;
+
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      final UserCredential userCredential = await _auth.signInWithCredential(
+        credential,
+      );
+      final User? user = userCredential.user;
+      if (user == null) return "에러가 발생했습니다.";
+
+      // 신규 유저면 Firestore에 저장
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      if (!doc.exists) {
+        await _firestore.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': user.email ?? '',
+          'name': user.displayName ?? '',
+          'nickname': user.displayName ?? '',
+          'createdAt': DateTime.now(),
+        });
+      }
+      return "success";
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  // 애플 로그인 - Apple Developer Program 가입 후 활성화 예정
 
   Future<String> loginUser({
     required String email,
