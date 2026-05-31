@@ -84,13 +84,28 @@ class _AnalysisState extends State<Analysis> {
     if (userId == null) return;
 
     _recurringSubscription?.cancel();
+
+    const weekdayMap = {
+      '월요일': 1,
+      '화요일': 2,
+      '수요일': 3,
+      '목요일': 4,
+      '금요일': 5,
+      '토요일': 6,
+      '일요일': 7,
+    };
+
     _recurringSubscription = FirebaseFirestore.instance
         .collection('users')
         .doc(userId)
         .collection('recurring_expenses')
         .snapshots()
         .listen((snapshot) {
-          final int today = DateTime.now().day;
+          final now = DateTime.now();
+          final int today = now.day;
+          final int todayWeekday = now.weekday;
+          final int lastDayOfMonth = DateTime(now.year, now.month + 1, 0).day;
+
           int paid = 0, upcoming = 0, paidVar = 0, upcomingVar = 0;
           List<Map<String, dynamic>> paidFixedList = [];
           List<Map<String, dynamic>> upcomingFixedList = [];
@@ -100,38 +115,72 @@ class _AnalysisState extends State<Analysis> {
           for (var doc in snapshot.docs) {
             final data = doc.data();
             final int amount = (data['amount'] ?? 0) as int;
-            var dayData = data['day'] ?? '1일';
-            final int day = (dayData is String)
-                ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
-                : (dayData as int);
+            final String period = (data['period'] ?? '매월').toString();
             final String expenseType = data['expenseType'] ?? '고정지출';
             final String name = data['name'] ?? '';
+            var dayData = data['day'] ?? '1일';
 
-            final item = {
-              'name': name,
-              'amount': amount,
-              'day': day,
-              'expenseType': expenseType,
-            };
-
-            if (expenseType == '고정지출') {
-              if (day <= today) {
-                paid += amount;
-                paidFixedList.add(item);
+            void addItem(int day, bool isPaid) {
+              final item = {
+                'name': name,
+                'amount': amount,
+                'day': day,
+                'expenseType': expenseType,
+              };
+              if (expenseType == '고정지출') {
+                if (isPaid) {
+                  paid += amount;
+                  paidFixedList.add(item);
+                } else {
+                  upcoming += amount;
+                  upcomingFixedList.add(item);
+                }
               } else {
-                upcoming += amount;
-                upcomingFixedList.add(item);
+                if (isPaid) {
+                  paidVar += amount;
+                  paidVarList.add(item);
+                } else {
+                  upcomingVar += amount;
+                  upcomingVarList.add(item);
+                }
               }
-            } else {
-              if (day <= today) {
-                paidVar += amount;
-                paidVarList.add(item);
-              } else {
-                upcomingVar += amount;
-                upcomingVarList.add(item);
+            }
+
+            if (period == '매월') {
+              final int day = (dayData is String)
+                  ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+                  : (dayData as int);
+              addItem(day, day <= today);
+            } else if (period == '매주') {
+              // 이번 달에 해당 요일이 몇 번 있는지 계산
+              final int targetWeekday = weekdayMap[dayData.toString()] ?? 1;
+              for (int d = 1; d <= lastDayOfMonth; d++) {
+                final weekday = DateTime(now.year, now.month, d).weekday;
+                if (weekday == targetWeekday) {
+                  addItem(d, d <= today);
+                }
+              }
+            } else if (period == '매일') {
+              // 1일 ~ 말일까지 매일 추가
+              for (int d = 1; d <= lastDayOfMonth; d++) {
+                addItem(d, d <= today);
               }
             }
           }
+
+          // 날짜순 정렬
+          paidFixedList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          upcomingFixedList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          paidVarList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          upcomingVarList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
 
           if (mounted) {
             setState(() {
@@ -151,16 +200,74 @@ class _AnalysisState extends State<Analysis> {
   Future<void> _loadAllBudgets() async {
     if (userId == null) return;
     try {
-      final snapshot = await FirebaseFirestore.instance
+      final now = DateTime.now();
+      final int lastDayOfMonth = DateTime(now.year, now.month + 1, 0).day;
+
+      const weekdayMap = {
+        '월요일': 1,
+        '화요일': 2,
+        '수요일': 3,
+        '목요일': 4,
+        '금요일': 5,
+        '토요일': 6,
+        '일요일': 7,
+      };
+
+      // 1) 카테고리 예산 로드
+      final budgetSnapshot = await FirebaseFirestore.instance
           .collection('users')
           .doc(userId)
           .collection('budgets')
           .get();
 
       final Map<String, int> tempBudgets = {};
-      for (var doc in snapshot.docs) {
-        tempBudgets[doc.id] = (doc.data()['amount'] ?? 0) as int;
+      for (var doc in budgetSnapshot.docs) {
+        final displayKey = doc.id.replaceAll('_', '/');
+        tempBudgets[displayKey] = (doc.data()['amount'] ?? 0) as int;
       }
+
+      // 2) 고정지출/변동지출 총액을 예산으로 추가
+      final recurringSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(userId)
+          .collection('recurring_expenses')
+          .get();
+
+      int fixedTotal = 0;
+      int variableTotal = 0;
+
+      for (var doc in recurringSnapshot.docs) {
+        final data = doc.data();
+        final int amount = (data['amount'] ?? 0) as int;
+        final String period = (data['period'] ?? '매월').toString();
+        final String expenseType = data['expenseType'] ?? '고정지출';
+        final dayData = data['day'] ?? '1일';
+
+        int count = 1;
+        if (period == '매월') {
+          count = 1;
+        } else if (period == '매주') {
+          final int targetWeekday = weekdayMap[dayData.toString()] ?? 1;
+          count = 0;
+          for (int d = 1; d <= lastDayOfMonth; d++) {
+            if (DateTime(now.year, now.month, d).weekday == targetWeekday) {
+              count++;
+            }
+          }
+        } else if (period == '매일') {
+          count = lastDayOfMonth;
+        }
+
+        final int total = amount * count;
+        if (expenseType == '고정지출') {
+          fixedTotal += total;
+        } else {
+          variableTotal += total;
+        }
+      }
+
+      if (fixedTotal > 0) tempBudgets['고정지출'] = fixedTotal;
+      if (variableTotal > 0) tempBudgets['변동지출'] = variableTotal;
 
       if (mounted) {
         setState(() {
@@ -236,8 +343,10 @@ class _AnalysisState extends State<Analysis> {
         children: [
           Scaffold(
             backgroundColor: AppColors.background(context),
-            body: const Center(
-              child: CircularProgressIndicator(color: AppColors.primaryStatic),
+            body: Center(
+              child: CircularProgressIndicator(
+                color: AppColors.primary(context),
+              ),
             ),
           ),
 
@@ -324,8 +433,8 @@ class _AnalysisState extends State<Analysis> {
     if (_isBudgetLoading || _isPremiumLoading) {
       return Scaffold(
         backgroundColor: AppColors.background(context),
-        body: const Center(
-          child: CircularProgressIndicator(color: AppColors.primaryStatic),
+        body: Center(
+          child: CircularProgressIndicator(color: AppColors.primary(context)),
         ),
       );
     }
@@ -354,7 +463,7 @@ class _AnalysisState extends State<Analysis> {
                   style: TextStyle(
                     fontWeight: FontWeight.bold,
                     color: AppColors.textPrimary(context),
-                    fontSize: 20,
+                    fontSize: 18,
                   ),
                 ),
                 Icon(
@@ -370,16 +479,16 @@ class _AnalysisState extends State<Analysis> {
           children: [
             // ✅ 상단 미리보기 배너
             Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              color: AppColors.primaryStatic.withOpacity(0.1),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              color: AppColors.primary(context).withOpacity(0.1),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    "👑 미리보기 페이지입니다",
+                  Text(
+                    "미리보기 페이지입니다",
                     style: TextStyle(
-                      color: AppColors.primaryStatic,
-                      fontSize: 13,
+                      color: AppColors.primary(context),
+                      fontSize: 14,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -391,13 +500,13 @@ class _AnalysisState extends State<Analysis> {
                         vertical: 6,
                       ),
                       decoration: BoxDecoration(
-                        color: AppColors.primaryStatic,
-                        borderRadius: BorderRadius.circular(20),
+                        color: AppColors.primary(context),
+                        borderRadius: BorderRadius.circular(5),
                       ),
-                      child: const Text(
+                      child: Text(
                         "프리미엄 시작하기",
                         style: TextStyle(
-                          color: Colors.white,
+                          color: AppColors.background(context),
                           fontSize: 12,
                           fontWeight: FontWeight.bold,
                         ),
@@ -451,7 +560,7 @@ class _AnalysisState extends State<Analysis> {
                       ),
                     ),
 
-                    // ✅ 자산 설정은 터치 가능
+                    // 미리보기 더미 데이터
                     _withPadding(
                       _AssetSettingWidget(
                         paidFixedItems: const [
@@ -521,7 +630,7 @@ class _AnalysisState extends State<Analysis> {
                     style: TextStyle(
                       fontWeight: FontWeight.bold,
                       color: AppColors.textPrimary(context),
-                      fontSize: 20,
+                      fontSize: 18,
                     ),
                   ),
                   GestureDetector(
@@ -549,22 +658,26 @@ class _AnalysisState extends State<Analysis> {
                 .collection('records')
                 .where(
                   'date',
-                  isGreaterThanOrEqualTo: DateTime(lastYear, lastMonth, 1),
+                  isGreaterThanOrEqualTo: Timestamp.fromDate(
+                    DateTime(lastYear, lastMonth, 1),
+                  ),
                 )
                 .where(
                   'date',
-                  isLessThanOrEqualTo: DateTime(
-                    currentYear,
-                    currentMonth + 1,
-                    0,
+                  isLessThan: Timestamp.fromDate(
+                    DateTime(
+                      currentYear,
+                      currentMonth + 1,
+                      1,
+                    ),
                   ),
                 )
                 .snapshots(),
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) {
-                return const Center(
+                return Center(
                   child: CircularProgressIndicator(
-                    color: AppColors.primaryStatic,
+                    color: AppColors.primary(context),
                   ),
                 );
               }
@@ -594,7 +707,7 @@ class _AnalysisState extends State<Analysis> {
                   String category = data['category']?.toString() ?? "기타";
                   String type = data['type']?.toString() ?? "지출";
 
-                  if (type == '지출') {
+                  if (type == '지출' || type == '이체(지출)') {
                     if (date.month == currentMonth &&
                         date.year == currentYear) {
                       currentMonthTotal += amount;
@@ -736,29 +849,17 @@ class _AnalysisState extends State<Analysis> {
                       ),
                     ),
                     _buildFullDivider(),
+                    _withPadding(_buildSectionTitle("자산 설정")),
                     _withPadding(
                       _AssetSettingWidget(
-                        paidFixedItems: const [
-                          {'day': 1, 'name': '관리비', 'amount': 80000},
-                          {'day': 5, 'name': '통신비', 'amount': 55000},
-                          {'day': 10, 'name': '구독료', 'amount': 30000},
-                          {'day': 15, 'name': '보험료', 'amount': 120000},
-                        ],
-                        upcomingFixedItems: const [
-                          {'day': 20, 'name': '주거비', 'amount': 500000},
-                          {'day': 25, 'name': '인터넷비', 'amount': 33000},
-                        ],
-                        paidVariableItems: const [
-                          {'day': 3, 'name': '교통비', 'amount': 60000},
-                          {'day': 8, 'name': '의료비', 'amount': 25000},
-                        ],
-                        upcomingVariableItems: const [
-                          {'day': 22, 'name': '공과금', 'amount': 45000},
-                        ],
-                        paidFixedTotal: 285000,
-                        upcomingFixedTotal: 533000,
-                        paidVariableTotal: 85000,
-                        upcomingVariableTotal: 45000,
+                        paidFixedItems: _paidFixedItems,
+                        upcomingFixedItems: _upcomingFixedItems,
+                        paidVariableItems: _paidVariableItems,
+                        upcomingVariableItems: _upcomingVariableItems,
+                        paidFixedTotal: _paidFixedTotal,
+                        upcomingFixedTotal: _upcomingFixedTotal,
+                        paidVariableTotal: _paidVariableTotal,
+                        upcomingVariableTotal: _upcomingVariableTotal,
                       ),
                     ),
                     const SizedBox(height: 20),
@@ -890,13 +991,13 @@ class _AnalysisState extends State<Analysis> {
           Text(
             t,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: 10,
               color: AppColors.textPrimary(context),
             ),
           ),
           Text(
             v,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
           ),
           const SizedBox(height: 4),
           Text(
@@ -962,14 +1063,14 @@ class _AnalysisState extends State<Analysis> {
                         children: [
                           Text(
                             "$categoryName ",
-                            style: const TextStyle(fontSize: 16),
+                            style: const TextStyle(fontSize: 15),
                           ),
                           Text(
                             "${p.toStringAsFixed(0)}%",
                             style: const TextStyle(
                               color: AppColors.secondary,
                               fontWeight: FontWeight.bold,
-                              fontSize: 14,
+                              fontSize: 12,
                             ),
                           ),
                         ],
@@ -992,7 +1093,7 @@ class _AnalysisState extends State<Analysis> {
                   "${nf.format(e.value)}원",
                   style: const TextStyle(
                     fontWeight: FontWeight.bold,
-                    fontSize: 16,
+                    fontSize: 15,
                   ),
                 ),
               ],
@@ -1027,10 +1128,10 @@ class _AnalysisState extends State<Analysis> {
             ),
             Text(
               "${nf.format(_paidFixedTotal + _upcomingFixedTotal)}원",
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: AppColors.pointColor,
+                color: AppColors.primary(context),
               ),
             ),
           ],
@@ -1067,10 +1168,10 @@ class _AnalysisState extends State<Analysis> {
             ),
             Text(
               "${nf.format(_paidVariableTotal + _upcomingVariableTotal)}원",
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: AppColors.pointColor,
+                color: AppColors.primary(context),
               ),
             ),
           ],
@@ -1435,10 +1536,10 @@ class _AssetSettingWidgetState extends State<_AssetSettingWidget> {
             ),
             Text(
               "${nf.format(widget.paidFixedTotal + widget.upcomingFixedTotal)}원",
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: AppColors.primaryStatic,
+                color: AppColors.primary(context),
               ),
             ),
           ],
@@ -1474,10 +1575,10 @@ class _AssetSettingWidgetState extends State<_AssetSettingWidget> {
             ),
             Text(
               "${nf.format(widget.paidVariableTotal + widget.upcomingVariableTotal)}원",
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
-                color: AppColors.primaryStatic,
+                color: AppColors.primary(context),
               ),
             ),
           ],
