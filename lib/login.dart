@@ -147,7 +147,7 @@ class _LoginState extends State<Login> {
                 ? AppColors.primary(context)
                 : AppColors.textPrimary(context),
             fontWeight: FontWeight.bold,
-            fontSize: 20,
+            fontSize: 18,
           ),
         ),
         centerTitle: true,
@@ -255,20 +255,20 @@ class _LoginState extends State<Login> {
               Row(
                 children: [
                   Expanded(
-                    child: Divider(color: AppColors.secondary.withOpacity(0.3)),
+                    child: Divider(color: AppColors.secondary.withOpacity(0.2)),
                   ),
                   Padding(
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     child: Text(
-                      "또는",
+                      "SNS 계정으로 로그인",
                       style: TextStyle(
-                        fontSize: 13,
+                        fontSize: 12,
                         color: AppColors.secondary,
                       ),
                     ),
                   ),
                   Expanded(
-                    child: Divider(color: AppColors.secondary.withOpacity(0.3)),
+                    child: Divider(color: AppColors.secondary.withOpacity(0.2)),
                   ),
                 ],
               ),
@@ -289,12 +289,10 @@ class _LoginState extends State<Login> {
                   child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
-                      Image.network(
-                        'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/3840px-Google_%22G%22_logo.svg.png',
-                        width: 15,
-                        height: 15,
-                        errorBuilder: (_, __, ___) =>
-                            const Icon(Icons.g_mobiledata, size: 24),
+                      Image.asset(
+                        'assets/google_logo.png',
+                        width: 20,
+                        height: 20,
                       ),
                       const SizedBox(width: 10),
                       Text(
@@ -417,14 +415,6 @@ class _LoginState extends State<Login> {
 
   List<Widget> _buildSignUpFields() {
     return [
-      Center(
-        child: Text(
-          "프로필 사진 선택 (선택사항)",
-          style: TextStyle(fontSize: 12, color: AppColors.secondary),
-        ),
-      ),
-      const SizedBox(height: 24),
-
       _buildLabel("이름"),
       _buildCustomTextField(
         hint: "이름을 입력해주세요",
