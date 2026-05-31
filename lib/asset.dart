@@ -1,9 +1,15 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_rekeep/constants/sized.dart';
 import 'package:intl/intl.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
+import 'package:flutter_rekeep/premium_service.dart';
+import 'package:flutter_rekeep/premium_gate.dart';
+
+import 'package:flutter_rekeep/ads/banner_ad_widget.dart';
 
 class Asset extends StatefulWidget {
   const Asset({super.key});
@@ -22,23 +28,35 @@ class _AssetState extends State<Asset> {
   @override
   void initState() {
     super.initState();
-    _loadRecurringExpenses();
+    _listenToRecurringExpenses(); // ✅ Future → Stream
   }
 
-  Future<void> _loadRecurringExpenses() async {
+  @override
+  void dispose() {
+    _recurringSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _listenToRecurringExpenses() {
     if (userId == null) return;
-    final snapshot = await FirebaseFirestore.instance
+    _recurringSubscription?.cancel();
+    _recurringSubscription = FirebaseFirestore.instance
         .collection('users')
         .doc(userId)
         .collection('recurring_expenses')
-        .get();
-
-    setState(() {
-      _recurringItems = snapshot.docs
-          .map((doc) => doc.data() as Map<String, dynamic>)
-          .toList();
-    });
+        .snapshots()
+        .listen((snapshot) {
+          if (mounted) {
+            setState(() {
+              _recurringItems = snapshot.docs
+                  .map((doc) => doc.data() as Map<String, dynamic>)
+                  .toList();
+            });
+          }
+        });
   }
+
+  StreamSubscription? _recurringSubscription;
 
   @override
   Widget build(BuildContext context) {
@@ -57,12 +75,32 @@ class _AssetState extends State<Asset> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               GestureDetector(
-                onTap: () => setState(
-                  () => _selectedMonth = DateTime(
+                onTap: () async {
+                  final targetMonth = DateTime(
                     _selectedMonth.year,
                     _selectedMonth.month - 1,
-                  ),
-                ),
+                  );
+                  final now = DateTime.now();
+                  final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+
+                  // 3개월 이전이면 프리미엄 체크
+                  if (!targetMonth.isAfter(threeMonthsAgo)) {
+                    final isPremium = await PremiumService.isPremium();
+                    if (!isPremium) {
+                      if (!context.mounted) return;
+                      final go = await PremiumGate.show(
+                        context,
+                        message: "3개월 이전 내역은 프리미엄 회원만 조회할 수 있어요.",
+                      );
+                      if (go == true) {
+                        // TODO: 프리미엄 페이지로 이동
+                        // Navigator.push(context, MaterialPageRoute(builder: (_) => const PremiumPage()));
+                      }
+                      return;
+                    }
+                  }
+                  setState(() => _selectedMonth = targetMonth);
+                },
                 behavior: HitTestBehavior.opaque,
                 child: Icon(
                   Icons.chevron_left,
@@ -102,116 +140,196 @@ class _AssetState extends State<Asset> {
         stream: FirebaseFirestore.instance
             .collection('users')
             .doc(userId ?? 'guest')
-            .collection('records')
-            .where(
-              'date',
-              isGreaterThanOrEqualTo: DateTime(
-                _selectedMonth.year,
-                _selectedMonth.month,
-                1,
-              ),
-            )
-            .where(
-              'date',
-              isLessThan: DateTime(
-                _selectedMonth.year,
-                _selectedMonth.month + 1,
-                1,
-              ),
-            )
+            .collection('recurring_expenses')
             .snapshots(),
-        builder: (context, snapshot) {
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
+        builder: (context, recurringSnapshot) {
+          final recurringItems =
+              recurringSnapshot.data?.docs
+                  .map((doc) => doc.data() as Map<String, dynamic>)
+                  .toList() ??
+              [];
 
-          int totalCash = 0;
-          int totalCard = 0;
-          int totalTransfer = 0;
-          int totalExpense = 0;
-          int lastMonthSameDayExp = 0;
+          return StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('users')
+                .doc(userId ?? 'guest')
+                .collection('records')
+                .where(
+                  'date',
+                  isGreaterThanOrEqualTo: DateTime(
+                    _selectedMonth.year,
+                    _selectedMonth.month - 1,
+                    1,
+                  ),
+                )
+                .where(
+                  'date',
+                  isLessThan: DateTime(
+                    _selectedMonth.year,
+                    _selectedMonth.month,
+                    1,
+                  ),
+                )
+                .snapshots(),
+            builder: (context, lastMonthSnapshot) {
+              return StreamBuilder<QuerySnapshot>(
+                stream: FirebaseFirestore.instance
+                    .collection('users')
+                    .doc(userId ?? 'guest')
+                    .collection('records')
+                    .where(
+                      'date',
+                      isGreaterThanOrEqualTo: DateTime(
+                        _selectedMonth.year,
+                        _selectedMonth.month,
+                        1,
+                      ),
+                    )
+                    .where(
+                      'date',
+                      isLessThan: DateTime(
+                        _selectedMonth.year,
+                        _selectedMonth.month + 1,
+                        1,
+                      ),
+                    )
+                    .snapshots(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
 
-          List<DocumentSnapshot> monthlyDocs = [];
-          DateTime now = DateTime.now();
+                  int totalCash = 0;
+                  int totalCard = 0;
+                  int totalTransfer = 0;
+                  int totalExpense = 0;
+                  int lastMonthSameDayExp = 0;
+                  int currentMonthRecordsOnly = 0;
 
-          if (snapshot.hasData) {
-            monthlyDocs = snapshot.data!.docs;
+                  List<DocumentSnapshot> monthlyDocs = [];
+                  DateTime now = DateTime.now();
 
-            for (var doc in monthlyDocs) {
-              var data = doc.data() as Map<String, dynamic>;
-              int amount = data['amount'] ?? 0;
-              String type = data['type'] ?? '지출';
-              String paymentMethod = (data['paymentMethod'] ?? '현금')
-                  .toString()
-                  .trim();
+                  // ✅ 이번달 records 계산
+                  if (snapshot.hasData) {
+                    monthlyDocs = snapshot.data!.docs;
 
-              Timestamp ts = data['date'];
-              DateTime date = ts.toDate();
+                    for (var doc in monthlyDocs) {
+                      var data = doc.data() as Map<String, dynamic>;
+                      int amount = data['amount'] ?? 0;
+                      String type = data['type'] ?? '지출';
+                      String paymentMethod = (data['paymentMethod'] ?? '현금')
+                          .toString()
+                          .trim();
+                      Timestamp ts = data['date'];
+                      DateTime date = ts.toDate();
 
-              if (date.year == _selectedMonth.year &&
-                  date.month == _selectedMonth.month) {
-                if (type == '지출' || type == '이체') {
-                  totalExpense += amount;
+                      if (date.year == _selectedMonth.year &&
+                          date.month == _selectedMonth.month) {
+                        if (type == '지출' || type == '이체(지출)') {
+                          totalExpense += amount;
+                          currentMonthRecordsOnly += amount;
+                          if (type == '이체(지출)') {
+                            totalTransfer -= amount;
+                          } else {
+                            if (paymentMethod == '현금') {
+                              totalCash -= amount;
+                            } else {
+                              totalCard -= amount;
+                            }
+                          }
+                        } else if (type == '수입' || type == '이체(수입)') {
+                          if (type == '이체(수입)') {
+                            totalTransfer += amount;
+                          } else if (paymentMethod == '현금') {
+                            totalCash += amount;
+                          } else {
+                            totalCard += amount;
+                          }
+                        }
+                      }
+                    } // for 루프 끝
+                  } // if (snapshot.hasData) 끝
 
-                  if (type == '이체') {
-                    totalTransfer -= amount;
-                  } else {
-                    if (paymentMethod == '현금') {
-                      totalCash -= amount;
-                    } else {
-                      totalCard -= amount;
+                  // ✅ 지난달 records 계산
+                  if (lastMonthSnapshot.hasData) {
+                    for (var doc in lastMonthSnapshot.data!.docs) {
+                      var data = doc.data() as Map<String, dynamic>;
+                      int amount = data['amount'] ?? 0;
+                      String type = data['type'] ?? '지출';
+                      DateTime date = (data['date'] as Timestamp).toDate();
+                      if ((type == '지출' || type == '이체(지출)') &&
+                          date.day <= now.day) {
+                        lastMonthSameDayExp += amount;
+                      }
                     }
                   }
-                } else if (type == '수입') {
-                  if (paymentMethod == '현금') {
-                    totalCash += amount;
-                  } else {
-                    totalCard += amount;
+
+                  // ✅ 이번달에만 고정/변동지출 포함
+                  final bool isCurrentMonthNow =
+                      _selectedMonth.year == now.year &&
+                      _selectedMonth.month == now.month;
+
+                  if (isCurrentMonthNow) {
+                    for (var item in recurringItems) {
+                      final int amount = (item['amount'] ?? 0) as int;
+                      var dayData = item['day'] ?? '1';
+                      final int day = (dayData is String)
+                          ? int.tryParse(
+                                  dayData.replaceAll(RegExp(r'[^0-9]'), ''),
+                                ) ??
+                                1
+                          : (dayData as int);
+                      if (day > now.day) continue;
+                      final String itemBankName =
+                          (item['bankName'] ?? '') as String;
+                      totalExpense += amount;
+                      if (itemBankName.isEmpty) {
+                        totalCash -= amount;
+                      } else {
+                        totalCard -= amount;
+                      }
+                    }
                   }
-                }
-              }
 
-              DateTime lastMonth = DateTime(
-                _selectedMonth.year,
-                _selectedMonth.month - 1,
+                  return SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildAssetHeader(
+                          userId,
+                          totalCash + totalCard + totalTransfer,
+                          currentMonthRecordsOnly,
+                          lastMonthSameDayExp,
+                        ),
+                        const BannerAdWidget(),
+                        _buildFullDivider(),
+                        _buildSectionHeader("자산 구성"),
+                        _buildAssetComposition(
+                          totalCash,
+                          totalCard,
+                          totalTransfer,
+                        ),
+                        _buildFullDivider(),
+                        _buildSectionHeader("카드"),
+                        _buildAccountList(monthlyDocs, recurringItems),
+                        _buildFullDivider(),
+                        _buildSectionHeader(
+                          "${_selectedMonth.month}월 거래 내역",
+                          trailing: _TransactionTooltipButton(
+                            tooltipText:
+                                "${now.month}월${now.day}일까지의 거래만 표시됩니다",
+                          ),
+                        ),
+                        _buildMonthlyTransactions(
+                          monthlyDocs,
+                          recurringItems,
+                        ),
+                      ],
+                    ),
+                  );
+                },
               );
-              if (date.year == lastMonth.year &&
-                  date.month == lastMonth.month) {
-                if ((type == '지출' || type == '이체') && date.day <= now.day) {
-                  lastMonthSameDayExp += amount;
-                }
-              }
-            }
-          }
-
-          return SingleChildScrollView(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildAssetHeader(
-                  userId,
-                  totalCash + totalCard + totalTransfer,
-                  totalExpense,
-                  lastMonthSameDayExp,
-                ),
-                _buildFullDivider(),
-                _buildSectionHeader("자산 구성"),
-                _buildAssetComposition(
-                  totalCash,
-                  totalCard,
-                  totalTransfer,
-                ),
-                const SizedBox(height: 10),
-                _buildFullDivider(),
-                _buildSectionHeader("카드", showMore: true),
-                _buildAccountList(monthlyDocs),
-                const SizedBox(height: 10),
-                _buildFullDivider(),
-                _buildSectionHeader("${_selectedMonth.month}월 거래 내역"),
-                _buildMonthlyTransactions(monthlyDocs, _recurringItems),
-                const SizedBox(height: 30),
-              ],
-            ),
+            },
           );
         },
       ),
@@ -244,8 +362,8 @@ class _AssetState extends State<Asset> {
         String emoji = diff >= 0 ? "☺️" : "🥲";
 
         Color statusColor = diff >= 0
-            ? AppColors.primary
-            : AppColors.pointColor;
+            ? AppColors.secondary
+            : AppColors.primary(context);
 
         return Container(
           width: double.infinity,
@@ -253,19 +371,27 @@ class _AssetState extends State<Asset> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                "$nickname님의 총 자산",
-                style: const TextStyle(
-                  fontSize: 14,
-                  color: AppColors.secondary,
-                  fontWeight: FontWeight.w500,
-                ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Text(
+                    "$nickname님의 총 자산",
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.secondary,
+                    ),
+                  ),
+                  _TransactionTooltipButton(
+                    tooltipText: "지난달 비교는 변동/고정지출을 제외한 금액입니다",
+                  ),
+                ],
               ),
               const SizedBox(height: 8),
               Text(
                 "${nf.format(totalAsset)}원",
                 style: TextStyle(
-                  fontSize: 20,
+                  fontSize: 22,
                   fontWeight: FontWeight.bold,
                   color: AppColors.textPrimary(context),
                 ),
@@ -287,7 +413,7 @@ class _AssetState extends State<Asset> {
                     Text(
                       message,
                       style: TextStyle(
-                        fontSize: 14,
+                        fontSize: 13,
                         color: statusColor,
                         fontWeight: FontWeight.bold,
                       ),
@@ -295,7 +421,7 @@ class _AssetState extends State<Asset> {
                     const SizedBox(width: 5),
                     BouncingText(
                       text: emoji,
-                      style: const TextStyle(fontSize: 16),
+                      style: const TextStyle(fontSize: 14),
                     ),
                   ],
                 ),
@@ -309,33 +435,46 @@ class _AssetState extends State<Asset> {
 
   Widget _buildFullDivider() => Column(
     children: [
-      const SizedBox(height: 20),
+      const SizedBox(height: 30),
       Container(
         height: 8,
         width: double.infinity,
         color: AppColors.divider(context),
       ),
-      const SizedBox(height: 20),
+      const SizedBox(height: 30),
     ],
   );
 
-  Widget _buildSectionHeader(String title, {bool showMore = false}) {
-    return Padding(
-      padding: AppLayout.defaultPadding.copyWith(bottom: 20),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(
-            title,
-            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+  Widget _buildSectionHeader(
+    String title, {
+    bool showMore = false,
+    Widget? trailing,
+  }) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Padding(
+          padding: AppLayout.defaultPadding.copyWith(bottom: 20),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              if (trailing != null) trailing,
+              if (showMore && trailing == null)
+                const Icon(
+                  Icons.chevron_right,
+                  color: AppColors.secondary,
+                ),
+            ],
           ),
-          if (showMore)
-            const Icon(
-              Icons.chevron_right,
-              color: AppColors.secondary,
-            ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -348,7 +487,7 @@ class _AssetState extends State<Asset> {
             children: [
               _buildCompItem("현금", cash, AppColors.pointColor),
               const SizedBox(width: 8),
-              _buildCompItem("카드", card, AppColors.primary),
+              _buildCompItem("카드", card, AppColors.primary(context)),
             ],
           ),
           const SizedBox(height: 10),
@@ -391,7 +530,7 @@ class _AssetState extends State<Asset> {
                   title,
                   style: TextStyle(
                     color: AppColors.textPrimary(context),
-                    fontSize: 14,
+                    fontSize: 12,
                   ),
                 ),
               ],
@@ -401,7 +540,7 @@ class _AssetState extends State<Asset> {
               "${nf.format(amount)}원",
               style: TextStyle(
                 fontWeight: FontWeight.bold,
-                fontSize: 16,
+                fontSize: 15,
                 color: AppColors.textPrimary(context),
               ),
             ),
@@ -411,7 +550,10 @@ class _AssetState extends State<Asset> {
     );
   }
 
-  Widget _buildAccountList(List<DocumentSnapshot> monthlyDocs) {
+  Widget _buildAccountList(
+    List<DocumentSnapshot> monthlyDocs,
+    List<Map<String, dynamic>> recurringItems,
+  ) {
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseFirestore.instance
           .collection('users')
@@ -424,11 +566,16 @@ class _AssetState extends State<Asset> {
           return const Center(child: Text("등록된 카드가 없습니다."));
         }
 
-        final registeredBanks = snapshot.data!.docs
-            .map(
-              (doc) =>
-                  (doc.data() as Map<String, dynamic>)['bankName'] as String,
-            )
+        final registeredCards = snapshot.data!.docs.map((doc) {
+          final data = doc.data() as Map<String, dynamic>;
+          return {
+            'bankName': (data['bankName'] ?? '') as String,
+            'cardName': (data['cardName'] ?? '') as String,
+          };
+        }).toList();
+
+        final registeredBanks = registeredCards
+            .map((c) => c['bankName']!)
             .toSet()
             .toList();
 
@@ -445,9 +592,25 @@ class _AssetState extends State<Asset> {
               .trim();
 
           String? belongingBank;
-          for (var bank in registeredBanks) {
-            if (recordCardName.contains(bank.replaceAll('카드', ''))) {
-              belongingBank = bank;
+          for (var card in registeredCards) {
+            final cardName = card['cardName']!;
+            final bankName = card['bankName']!;
+
+            if (recordCardName == cardName) {
+              belongingBank = bankName;
+              break;
+            }
+            if (recordCardName.startsWith(cardName)) {
+              belongingBank = bankName;
+              break;
+            }
+            if (cardName.isNotEmpty && recordCardName.contains(cardName)) {
+              belongingBank = bankName;
+              break;
+            }
+            if (bankName.isNotEmpty &&
+                recordCardName.contains(bankName.replaceAll('카드', ''))) {
+              belongingBank = bankName;
               break;
             }
           }
@@ -457,19 +620,45 @@ class _AssetState extends State<Asset> {
             if (type == '수입') {
               bankAmounts[belongingBank] =
                   (bankAmounts[belongingBank] ?? 0) + amount;
-            } else if (type == '지출' || type == '이체') {
+            } else if (type == '지출' || type == '이체(지출)') {
               bankAmounts[belongingBank] =
                   (bankAmounts[belongingBank] ?? 0) - amount;
             }
           }
         }
 
+        final int today = DateTime.now().day;
+        final bool isCurrentMonth =
+            _selectedMonth.year == DateTime.now().year &&
+            _selectedMonth.month == DateTime.now().month;
+
+        if (isCurrentMonth) {
+          for (var item in recurringItems) {
+            final String itemBankName = (item['bankName'] ?? '') as String;
+            if (itemBankName.isEmpty) continue;
+            if (!registeredBanks.contains(itemBankName)) continue;
+
+            final int amount = (item['amount'] ?? 0) as int;
+            var dayData = item['day'] ?? '1';
+            final int day = (dayData is String)
+                ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+                : (dayData as int);
+
+            if (day > today) continue;
+            bankAmounts[itemBankName] =
+                (bankAmounts[itemBankName] ?? 0) - amount;
+          }
+        }
+
         return Padding(
           padding: AppLayout.defaultPadding,
           child: Column(
-            children: bankAmounts.keys.map((bankName) {
+            children: bankAmounts.keys.toList().asMap().entries.map((entry) {
+              final index = entry.key;
+              final bankName = entry.value;
+              final isLast = index == bankAmounts.length - 1;
               return Padding(
-                padding: const EdgeInsets.only(bottom: 10),
+                padding: EdgeInsets.only(bottom: isLast ? 0 : 10),
                 child: _buildAccountTile(
                   bankName,
                   "${nf.format(bankAmounts[bankName])}원",
@@ -504,7 +693,7 @@ class _AssetState extends State<Asset> {
       if (bankName.contains("토스")) return const Color(0xFF000000);
       if (bankName.contains("기업")) return const Color(0xFF014898);
       if (bankName.contains("수협")) return const Color(0xFF0169b3);
-      return AppColors.secondary;
+      return AppColors.divider(context);
     }
 
     final Map<String, String> bankLogos = {
@@ -561,6 +750,13 @@ class _AssetState extends State<Asset> {
             decoration: BoxDecoration(
               color: bankColor,
               borderRadius: BorderRadius.circular(50),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.secondary.withOpacity(0.1),
+                  blurRadius: 5,
+                  offset: const Offset(0, 2),
+                ),
+              ],
             ),
             child: Center(
               child: Container(
@@ -569,13 +765,6 @@ class _AssetState extends State<Asset> {
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.secondary.withOpacity(0.1),
-                      blurRadius: 5,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
                 ),
 
                 child: logoUrl != null
@@ -589,16 +778,16 @@ class _AssetState extends State<Asset> {
               ),
             ),
           ),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
           Expanded(
             child: Text(
               name,
-              style: const TextStyle(fontSize: 16),
+              style: const TextStyle(fontSize: 15),
             ),
           ),
           Text(
             balance,
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -614,39 +803,47 @@ class _AssetState extends State<Asset> {
         _selectedMonth.year == now.year && _selectedMonth.month == now.month;
 
     List<Map<String, dynamic>> recurringAsDocs = [];
-    for (var item in recurringItems) {
-      var dayData = item['day'] ?? '1일';
-      int day = (dayData is String)
-          ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
-          : (dayData as int);
 
-      if (isCurrentMonth && day > now.day) continue;
+    // ✅ 이번달에만 고정/변동지출 표시
+    if (isCurrentMonth) {
+      for (var item in recurringItems) {
+        var dayData = item['day'] ?? '1일';
+        int day = (dayData is String)
+            ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+            : (dayData as int);
 
-      String expenseType = item['expenseType'] ?? '고정지출';
-      String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+        if (day > now.day) continue; // 오늘 이후는 제외
 
-      recurringAsDocs.add({
-        'place': item['name'] ?? '',
-        'amount': item['amount'] ?? 0,
-        'type': '지출',
-        'category': {'name': expenseType, 'icon': icon},
-        'bankName': '',
-        'date': DateTime(
-          _selectedMonth.year,
-          _selectedMonth.month,
-          day,
-        ),
-        'isRecurring': true,
-      });
+        String expenseType = item['expenseType'] ?? '고정지출';
+        String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+        recurringAsDocs.add({
+          'place': item['name'] ?? '',
+          'amount': item['amount'] ?? 0,
+          'type': '지출',
+          'category': {'name': expenseType, 'icon': icon},
+          'bankName': item['bankName'] ?? '',
+          'date': DateTime(_selectedMonth.year, _selectedMonth.month, day),
+          'isRecurring': true,
+        });
+      }
     }
 
     List<Map<String, dynamic>> allItems = [
-      ...monthlyDocs.map((doc) {
-        var data = doc.data() as Map<String, dynamic>;
-        data['date'] = (data['date'] as Timestamp).toDate();
-        return data;
-      }),
-      ...recurringAsDocs,
+      ...monthlyDocs
+          .map((doc) {
+            var data = doc.data() as Map<String, dynamic>;
+            data['date'] = (data['date'] as Timestamp).toDate();
+            return data;
+          })
+          .where((data) {
+            // ✅ 이번 달이면 오늘 날짜까지만, 다른 달이면 전부 표시
+            if (!isCurrentMonth) return true;
+            DateTime date = data['date'] as DateTime;
+            return !date.isAfter(
+              DateTime(now.year, now.month, now.day, 23, 59, 59),
+            );
+          }),
+      ...recurringAsDocs, // 고정지출은 위에서 이미 필터링됨
     ];
 
     if (allItems.isEmpty) {
@@ -680,7 +877,7 @@ class _AssetState extends State<Asset> {
             String type = item['type'] ?? '지출';
             if (type == '수입') {
               dayIncome += amount;
-            } else if (type == '지출' || type == '이체') {
+            } else if (type == '지출' || type == '이체(지출)') {
               dayExpense += amount;
             }
           }
@@ -694,7 +891,7 @@ class _AssetState extends State<Asset> {
                   Text(
                     dateLabel,
                     style: TextStyle(
-                      fontSize: 14,
+                      fontSize: 12,
                       color: AppColors.textPrimary(context),
                     ),
                   ),
@@ -703,16 +900,19 @@ class _AssetState extends State<Asset> {
                       if (dayIncome > 0)
                         Text(
                           "+${nf.format(dayIncome)}원 ",
-                          style: const TextStyle(
-                            fontSize: 14,
-                            color: AppColors.primary,
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: AppColors.primary(context),
                           ),
                         ),
+                      const SizedBox(
+                        width: 5,
+                      ),
                       if (dayExpense > 0)
                         Text(
                           "-${nf.format(dayExpense)}원",
                           style: TextStyle(
-                            fontSize: 14,
+                            fontSize: 12,
                             color: AppColors.textPrimary(context),
                           ),
                         ),
@@ -746,7 +946,7 @@ class _AssetState extends State<Asset> {
                   title: Text(
                     item['place'] ?? "사용처 없음",
                     style: const TextStyle(
-                      fontSize: 16,
+                      fontSize: 15,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
@@ -763,10 +963,9 @@ class _AssetState extends State<Asset> {
                     "${isIncome ? '+' : '-'}${nf.format(item['amount'])}원",
                     style: TextStyle(
                       color: isIncome
-                          ? AppColors.primary
+                          ? AppColors.primary(context)
                           : AppColors.textPrimary(context),
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
+                      fontSize: 15,
                     ),
                   ),
                 );
@@ -827,6 +1026,178 @@ class _BouncingTextState extends State<BouncingText>
           child: Text(widget.text, style: widget.style),
         );
       },
+    );
+  }
+}
+
+class _AssetTooltipButton extends StatefulWidget {
+  const _AssetTooltipButton();
+
+  @override
+  State<_AssetTooltipButton> createState() => _AssetTooltipButtonState();
+}
+
+class _AssetTooltipButtonState extends State<_AssetTooltipButton> {
+  bool _showTooltip = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final now = DateTime.now();
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        GestureDetector(
+          onTap: () => setState(() => _showTooltip = !_showTooltip),
+          child: Container(
+            width: 20,
+            height: 20,
+            decoration: BoxDecoration(
+              color: AppColors.divider(context),
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: const Text(
+              "?",
+              style: TextStyle(
+                fontSize: 12,
+                color: AppColors.secondary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ),
+        if (_showTooltip)
+          Positioned(
+            top: 26, // ? 버튼 아래에 위치
+            right: 0,
+            child: GestureDetector(
+              onTap: () => setState(() => _showTooltip = false),
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 8,
+                ),
+                decoration: BoxDecoration(
+                  color: AppColors.divider(context),
+                  borderRadius: BorderRadius.circular(5),
+                ),
+                child: Text(
+                  "${now.month}/${now.day} 기준으로 표시됩니다",
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: AppColors.secondary,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TransactionTooltipButton extends StatefulWidget {
+  final String tooltipText;
+  const _TransactionTooltipButton({required this.tooltipText});
+
+  @override
+  State<_TransactionTooltipButton> createState() =>
+      _TransactionTooltipButtonState();
+}
+
+class _TransactionTooltipButtonState extends State<_TransactionTooltipButton> {
+  OverlayEntry? _overlayEntry;
+
+  void _showTooltip() {
+    final renderBox = context.findRenderObject() as RenderBox;
+    final offset = renderBox.localToGlobal(Offset.zero);
+
+    _overlayEntry = OverlayEntry(
+      builder: (context) => Stack(
+        children: [
+          // 화면 전체를 덮는 투명 배리어: 바깥 탭/스크롤 시 닫힘
+          Positioned.fill(
+            child: GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: _hideTooltip,
+              onPanStart: (_) => _hideTooltip(),
+              onVerticalDragStart: (_) => _hideTooltip(),
+            ),
+          ),
+          Positioned(
+            top: offset.dy + 26,
+            right:
+                MediaQuery.of(context).size.width -
+                offset.dx -
+                renderBox.size.width,
+            child: Material(
+              color: Colors.transparent,
+              child: GestureDetector(
+                onTap: _hideTooltip,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppColors.divider(context),
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                  child: Text(
+                    widget.tooltipText,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.secondary,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+    Overlay.of(context).insert(_overlayEntry!);
+  }
+
+  void _hideTooltip() {
+    _overlayEntry?.remove();
+    _overlayEntry = null;
+  }
+
+  @override
+  void dispose() {
+    _hideTooltip();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: () {
+        if (_overlayEntry == null) {
+          _showTooltip();
+        } else {
+          _hideTooltip();
+        }
+      },
+      child: Container(
+        width: 20,
+        height: 20,
+        decoration: BoxDecoration(
+          color: AppColors.divider(context),
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: const Text(
+          "?",
+          style: TextStyle(
+            fontSize: 12,
+            color: AppColors.secondary,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
     );
   }
 }
