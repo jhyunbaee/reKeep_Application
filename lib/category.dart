@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter_rekeep/calendar_seeder.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 
 class Category extends StatefulWidget {
@@ -18,41 +19,26 @@ class _CategoryManagementState extends State<Category>
   bool _isEditMode = false;
   final Set<String> _selectedDocIds = {};
 
-  // 기본값 리스트 (기존과 동일)
-  final List<Map<String, String>> defaultExpenses = [
-    {'name': '식비', 'icon': '🍴'},
-    {'name': '카페/간식', 'icon': '☕'},
-    {'name': '마트/편의점', 'icon': '🛒'},
-    {'name': '술/유흥', 'icon': '🍺'},
-    {'name': '생활', 'icon': '🏠'},
-    {'name': '교통', 'icon': '🚌'},
-    {'name': '쇼핑', 'icon': '🛍️'},
-    {'name': '의료', 'icon': '🏥'},
-    {'name': '주거/통신', 'icon': '📱'},
-    {'name': '문화/여가', 'icon': '🎬'},
-    {'name': '뷰티/미용', 'icon': '💄'},
-    {'name': '반려동물', 'icon': '🐶'},
-    {'name': '취미', 'icon': '🎨'},
-    {'name': '교육', 'icon': '📚'},
-    {'name': '여행', 'icon': '✈️'},
-    {'name': '고정지출', 'icon': '📅'},
-    {'name': '기타', 'icon': '✨'},
-  ];
-  final List<Map<String, String>> defaultIncomes = [
-    {'name': '급여', 'icon': '💰'},
-    {'name': '상여금', 'icon': '🎉'},
-    {'name': '사업/수입', 'icon': '📈'},
-    {'name': '장학금', 'icon': '🧑‍💼'},
-    {'name': '용돈', 'icon': '🎁'},
-    {'name': '정산하기', 'icon': '📊'},
-    {'name': '이월', 'icon': '📅'},
-    {'name': '기타', 'icon': '✨'},
-  ];
-
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 2, vsync: this);
+    _autoSeedIfEmpty();
+  }
+
+  Future<void> _autoSeedIfEmpty() async {
+    if (userId == null) return;
+    await seedDefaultCategoriesIfEmpty(userId!);
+  }
+
+  Future<void> _seedDefaultCategories() async {
+    if (userId == null) return;
+    await seedDefaultCategories(userId!); // IfEmpty 없는 버전으로 (강제 초기화)
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("카테고리를 초기화했습니다.")),
+      );
+    }
   }
 
   @override
@@ -60,24 +46,23 @@ class _CategoryManagementState extends State<Category>
     String currentType = _tabController.index == 0 ? "지출" : "수입";
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.background(context),
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.background(context),
         elevation: 0,
         scrolledUnderElevation: 0,
-        // 1. 왼쪽 여백을 위해 자동 뒤로가기 버튼 대신 커스텀 배치 (필요시)
-        leadingWidth: 64, // 뒤로가기 버튼 + 여백 고려
+        leadingWidth: 64,
         centerTitle: true,
-        title: const Text(
+        title: Text(
           "카테고리 관리",
           style: TextStyle(
-            color: Colors.black,
-            fontSize: 20,
+            color: AppColors.textPrimary(context),
+            fontSize: 18,
             fontWeight: FontWeight.bold,
           ),
         ),
-        surfaceTintColor: Colors.white,
-        iconTheme: const IconThemeData(color: Colors.black),
+        surfaceTintColor: AppColors.background(context),
+        iconTheme: IconThemeData(color: AppColors.textPrimary(context)),
         actions: [
           IconButton(
             padding: EdgeInsets.only(right: 24),
@@ -87,18 +72,16 @@ class _CategoryManagementState extends State<Category>
         ],
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.primary,
+          indicatorColor: AppColors.primary(context),
+          labelColor: AppColors.primary(context),
           unselectedLabelColor: AppColors.secondary,
           labelStyle: const TextStyle(
-            fontSize: 14,
+            fontSize: 15,
             fontWeight: FontWeight.bold,
           ),
 
-          indicatorSize:
-              TabBarIndicatorSize.tab, // 강조선(밑줄)을 텍스트 길이가 아닌 탭 전체 너비(1/2)에 맞춤
-          isScrollable:
-              false, // 탭을 스크롤하지 않고 화면 전체 너비에 맞춰 균등 분할 (기본값이 false지만 명시)
+          indicatorSize: TabBarIndicatorSize.tab,
+          isScrollable: false,
 
           tabs: const [
             Tab(text: "지출"),
@@ -111,7 +94,6 @@ class _CategoryManagementState extends State<Category>
         controller: _tabController,
         children: [_buildCategoryList("지출"), _buildCategoryList("수입")],
       ),
-      // 💡 하단 편집/추가 버튼 바
       bottomNavigationBar: _buildBottomActions(currentType),
     );
   }
@@ -125,8 +107,8 @@ class _CategoryManagementState extends State<Category>
         top: 10,
       ),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border(top: BorderSide(color: Colors.grey.shade100)),
+        color: AppColors.background(context),
+        border: Border(top: BorderSide(color: AppColors.borderColor)),
       ),
       child: _isEditMode
           ? Row(
@@ -139,11 +121,11 @@ class _CategoryManagementState extends State<Category>
                     }),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 15),
-                      side: BorderSide(color: AppColors.fieldColor),
+                      side: BorderSide(color: AppColors.divider(context)),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      backgroundColor: AppColors.fieldColor,
+                      backgroundColor: AppColors.divider(context),
                     ),
                     child: const Text(
                       "취소",
@@ -170,7 +152,7 @@ class _CategoryManagementState extends State<Category>
                     child: Text(
                       "삭제 (${_selectedDocIds.length})",
                       style: TextStyle(
-                        color: Colors.white,
+                        color: AppColors.background(context),
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
                       ),
@@ -186,16 +168,16 @@ class _CategoryManagementState extends State<Category>
                     onPressed: () => setState(() => _isEditMode = true),
                     style: OutlinedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 15),
-                      side: const BorderSide(color: AppColors.primaryLightv2),
+                      side: BorderSide(color: AppColors.divider(context)),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      backgroundColor: AppColors.primaryLightv2,
+                      backgroundColor: AppColors.divider(context),
                     ),
                     child: const Text(
                       "편집",
                       style: TextStyle(
-                        color: AppColors.primary,
+                        color: AppColors.secondary,
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
                       ),
@@ -207,17 +189,17 @@ class _CategoryManagementState extends State<Category>
                   child: ElevatedButton(
                     onPressed: () => _showCategoryDialog(currentType),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
+                      backgroundColor: AppColors.primary(context),
                       elevation: 0,
                       padding: const EdgeInsets.symmetric(vertical: 15),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
                     ),
-                    child: const Text(
+                    child: Text(
                       "추가",
                       style: TextStyle(
-                        color: Colors.white,
+                        color: AppColors.background(context),
                         fontWeight: FontWeight.bold,
                         fontSize: 16,
                       ),
@@ -249,12 +231,8 @@ class _CategoryManagementState extends State<Category>
         final docs = snapshot.data!.docs;
         if (docs.isEmpty) return const Center(child: Text("등록된 카테고리가 없습니다."));
 
-        // 💡 GridView 스타일의 Reorderable 리스트를 만들기 위해 Wrap이나 Grid를 사용합니다.
-        // 여기서는 위치 변경 기능을 유지하기 위해 ReorderableListView의 프록시를 활용하거나
-        // 간단하게 ReorderableListView에 그리드 스타일 패딩을 줍니다.
         return ReorderableListView.builder(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-          // 격자 느낌을 주기 위해 리스트 빌더 내부 디자인을 카드형으로 변경
           itemCount: docs.length,
           onReorder: (oldIndex, newIndex) =>
               _onReorder(docs, oldIndex, newIndex),
@@ -262,64 +240,63 @@ class _CategoryManagementState extends State<Category>
             final doc = docs[i];
             final isSelected = _selectedDocIds.contains(doc.id);
 
-            return Container(
+            return Material(
               key: ValueKey(doc.id),
-              margin: const EdgeInsets.only(bottom: 13), // 항목 간 간격
-              decoration: BoxDecoration(
-                color: isSelected
-                    ? AppColors.primary.withOpacity(0.1)
-                    : Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: isSelected ? AppColors.primary : AppColors.borderColor,
-                  width: 1,
+              color: isSelected
+                  ? AppColors.primary(context).withOpacity(0.1)
+                  : AppColors.background(context),
+              borderRadius: BorderRadius.circular(10),
+              child: Container(
+                margin: const EdgeInsets.only(bottom: 13),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppColors.borderColor),
                 ),
-              ),
-              child: ListTile(
-                contentPadding: const EdgeInsets.symmetric(
-                  horizontal: 15,
-                  vertical: 3,
-                ),
-                // 💡 편집 모드일 때 체크박스, 아닐 때는 아이콘
-                leading: _isEditMode
-                    ? Checkbox(
-                        value: isSelected,
-                        activeColor: AppColors.primary,
-                        onChanged: (val) {
-                          setState(() {
-                            if (isSelected) {
-                              _selectedDocIds.remove(doc.id);
-                            } else {
-                              _selectedDocIds.add(doc.id);
-                            }
-                          });
-                        },
-                      )
-                    : Text(doc['icon'], style: const TextStyle(fontSize: 24)),
-                title: Text(
-                  doc['name'],
-                  style: const TextStyle(
-                    fontSize: 16,
+                child: ListTile(
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 15,
+                    vertical: 3,
                   ),
+                  leading: _isEditMode
+                      ? Checkbox(
+                          value: isSelected,
+                          activeColor: AppColors.primary(context),
+                          onChanged: (val) {
+                            setState(() {
+                              if (isSelected) {
+                                _selectedDocIds.remove(doc.id);
+                              } else {
+                                _selectedDocIds.add(doc.id);
+                              }
+                            });
+                          },
+                        )
+                      : Text(doc['icon'], style: const TextStyle(fontSize: 24)),
+                  title: Text(
+                    doc['name'],
+                    style: const TextStyle(
+                      fontSize: 15,
+                    ),
+                  ),
+                  trailing: _isEditMode
+                      ? const Icon(
+                          Icons.drag_indicator,
+                          color: AppColors.secondary,
+                        )
+                      : IconButton(
+                          icon: const Icon(Icons.edit_outlined, size: 20),
+                          onPressed: () => _showCategoryDialog(type, doc: doc),
+                        ),
+                  onTap: _isEditMode
+                      ? () => setState(() {
+                          if (isSelected) {
+                            _selectedDocIds.remove(doc.id);
+                          } else {
+                            _selectedDocIds.add(doc.id);
+                          }
+                        })
+                      : null,
                 ),
-                trailing: _isEditMode
-                    ? const Icon(
-                        Icons.drag_indicator,
-                        color: AppColors.borderColor,
-                      ) // 편집 모드일 때 드래그 핸들
-                    : IconButton(
-                        icon: const Icon(Icons.edit_outlined, size: 20),
-                        onPressed: () => _showCategoryDialog(type, doc: doc),
-                      ),
-                onTap: _isEditMode
-                    ? () => setState(() {
-                        if (isSelected) {
-                          _selectedDocIds.remove(doc.id);
-                        } else {
-                          _selectedDocIds.add(doc.id);
-                        }
-                      })
-                    : null,
               ),
             );
           },
@@ -328,7 +305,6 @@ class _CategoryManagementState extends State<Category>
     );
   }
 
-  // 💡 3. 순서 변경 시 DB 업데이트 로직
   Future<void> _onReorder(
     List<QueryDocumentSnapshot> docs,
     int oldIndex,
@@ -338,18 +314,16 @@ class _CategoryManagementState extends State<Category>
       newIndex -= 1;
     }
 
-    // 리스트 순서 변경
     final List<QueryDocumentSnapshot> items = List.from(docs);
     final QueryDocumentSnapshot movedItem = items.removeAt(oldIndex);
     items.insert(newIndex, movedItem);
 
-    // Firestore Batch 업데이트 (모든 아이템의 index를 재정렬된 순서대로 저장)
     final batch = FirebaseFirestore.instance.batch();
     for (int i = 0; i < items.length; i++) {
       batch.update(items[i].reference, {'index': i});
     }
     await batch.commit();
-  } // --- 기존 로직 (데이터 처리) ---
+  }
 
   Future<void> _deleteSelected() async {
     if (_selectedDocIds.isEmpty) return;
@@ -370,58 +344,6 @@ class _CategoryManagementState extends State<Category>
     });
   }
 
-  Future<void> _seedDefaultCategories() async {
-    final categoriesRef = FirebaseFirestore.instance
-        .collection('users')
-        .doc(userId)
-        .collection('categories');
-
-    // 1. 현재 DB에 있는 모든 데이터를 가져옵니다.
-    final snapshot = await categoriesRef.get();
-
-    final batch = FirebaseFirestore.instance.batch();
-
-    // 💡 [해결책] 기존에 데이터가 있다면, 묻지도 따지지도 않고 다 지웁니다.
-    // 그래야 중복 문제도 해결되고 index가 포함된 새 데이터가 들어갈 자리가 생깁니다.
-    if (snapshot.docs.isNotEmpty) {
-      for (var doc in snapshot.docs) {
-        batch.delete(doc.reference);
-      }
-      // 일단 한 번 비웁니다.
-      await batch.commit();
-    }
-
-    // 2. 이제 깨끗해진 DB에 index를 포함한 기본 데이터를 새로 넣습니다.
-    final newBatch = FirebaseFirestore.instance.batch();
-    int addedCount = 0;
-
-    // 지출 데이터 삽입
-    for (int i = 0; i < defaultExpenses.length; i++) {
-      newBatch.set(categoriesRef.doc(), {
-        ...defaultExpenses[i],
-        'type': '지출',
-        'index': i,
-      });
-      addedCount++;
-    }
-
-    // 수입 데이터 삽입
-    for (int i = 0; i < defaultIncomes.length; i++) {
-      newBatch.set(categoriesRef.doc(), {
-        ...defaultIncomes[i],
-        'type': '수입',
-        'index': i + defaultExpenses.length, // 지출 다음 번호부터 시작
-      });
-      addedCount++;
-    }
-
-    await newBatch.commit();
-
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text("데이터를 초기화하고 $addedCount개의 카테고리를 새로 생성했습니다.")),
-    );
-  }
-
   void _showCategoryDialog(String type, {DocumentSnapshot? doc}) {
     final TextEditingController nameController = TextEditingController(
       text: doc?['name'] ?? '',
@@ -430,16 +352,14 @@ class _CategoryManagementState extends State<Category>
       text: doc?['icon'] ?? '',
     );
 
-    // 💡 showDialog 대신 showModalBottomSheet 사용
     showModalBottomSheet(
       context: context,
-      isScrollControlled: true, // 💡 키보드가 올라올 때 레이아웃이 밀려 올라오도록 설정
-      backgroundColor: Colors.white,
+      isScrollControlled: true,
+      backgroundColor: AppColors.background(context),
       shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
       ),
       builder: (context) => Padding(
-        // 키보드에 가려지지 않게 여백 추가
         padding: EdgeInsets.only(
           bottom: 20,
           left: 24,
@@ -447,7 +367,7 @@ class _CategoryManagementState extends State<Category>
           top: 24,
         ),
         child: Column(
-          mainAxisSize: MainAxisSize.min, // 💡 내용물만큼만 높이 차지
+          mainAxisSize: MainAxisSize.min,
           children: [
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -461,13 +381,12 @@ class _CategoryManagementState extends State<Category>
                 ),
                 GestureDetector(
                   onTap: () => Navigator.pop(context),
-                  child: const Icon(Icons.close), // 순수 아이콘만 사용
+                  child: const Icon(Icons.close),
                 ),
               ],
             ),
             const SizedBox(height: 20),
 
-            // 아이콘 필드
             Row(
               children: [
                 const SizedBox(
@@ -475,7 +394,7 @@ class _CategoryManagementState extends State<Category>
                   child: Text(
                     "아이콘",
                     style: TextStyle(
-                      fontSize: 15,
+                      fontSize: 14,
                       color: AppColors.secondary,
                       fontWeight: FontWeight.bold,
                     ),
@@ -489,7 +408,7 @@ class _CategoryManagementState extends State<Category>
                       decoration: InputDecoration(
                         hintText: "예: 🍴",
                         filled: true,
-                        fillColor: AppColors.fieldColor,
+                        fillColor: AppColors.divider(context),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(10),
                           borderSide: BorderSide.none,
@@ -502,7 +421,6 @@ class _CategoryManagementState extends State<Category>
             ),
             const SizedBox(height: 15),
 
-            // 카테고리 필드
             Row(
               children: [
                 const SizedBox(
@@ -510,7 +428,7 @@ class _CategoryManagementState extends State<Category>
                   child: Text(
                     "카테고리",
                     style: TextStyle(
-                      fontSize: 15,
+                      fontSize: 14,
                       color: AppColors.secondary,
                       fontWeight: FontWeight.bold,
                     ),
@@ -524,7 +442,7 @@ class _CategoryManagementState extends State<Category>
                       decoration: InputDecoration(
                         hintText: "예: 식비",
                         filled: true,
-                        fillColor: AppColors.fieldColor,
+                        fillColor: AppColors.divider(context),
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(10),
                           borderSide: BorderSide.none,
@@ -537,23 +455,30 @@ class _CategoryManagementState extends State<Category>
             ),
             const SizedBox(height: 30),
 
-            // 저장 버튼
             SizedBox(
               height: 55,
               width: double.infinity,
               child: ElevatedButton(
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary,
+                  backgroundColor: AppColors.primary(context),
                   shape: RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
                   ),
                   elevation: 0,
                 ),
                 onPressed: () async {
+                  final existingDocs = await FirebaseFirestore.instance
+                      .collection('users')
+                      .doc(userId)
+                      .collection('categories')
+                      .where('type', isEqualTo: type)
+                      .get();
+
                   final data = {
                     'name': nameController.text,
                     'icon': iconController.text,
                     'type': type,
+                    'index': existingDocs.docs.length,
                   };
                   if (doc == null) {
                     await FirebaseFirestore.instance
@@ -567,10 +492,10 @@ class _CategoryManagementState extends State<Category>
                   if (!mounted) return;
                   Navigator.pop(context);
                 },
-                child: const Text(
+                child: Text(
                   "저장",
                   style: TextStyle(
-                    color: Colors.white,
+                    color: AppColors.background(context),
                     fontWeight: FontWeight.bold,
                     fontSize: 16,
                   ),
