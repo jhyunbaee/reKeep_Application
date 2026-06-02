@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:font_awesome_flutter/font_awesome_flutter.dart';
-import 'package:flutter_rekeep/constants/colors.dart'; // 본인 프로젝트 경로 확인
+import 'package:flutter_rekeep/constants/colors.dart';
 
 class BottomMenuBar extends StatelessWidget {
   final int selectedIndex;
@@ -15,9 +14,9 @@ class BottomMenuBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 85, // 높이를 넉넉하게 수정
+      height: 85,
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: AppColors.background(context),
         border: Border(
           top: BorderSide(color: AppColors.borderColor),
         ),
@@ -26,37 +25,46 @@ class BottomMenuBar extends StatelessWidget {
         child: Row(
           mainAxisAlignment: MainAxisAlignment.spaceAround,
           children: [
-            _buildMenuItem(FontAwesomeIcons.houseChimney, "홈", 0),
-            _buildMenuItem(FontAwesomeIcons.sackDollar, "자산", 1),
-            _buildMenuItem(FontAwesomeIcons.chartSimple, "분석", 2),
-            _buildMenuItem(FontAwesomeIcons.ellipsis, "더보기", 3),
+            _buildMenuItem(context, Icons.home_rounded, "홈", 0),
+            _buildMenuItem(context, Icons.wallet, "자산", 1),
+            _buildMenuItem(context, Icons.equalizer_rounded, "분석", 2),
+            _buildMenuItem(context, Icons.more_horiz_rounded, "더보기", 3),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildMenuItem(IconData icon, String label, int index) {
+  Widget _buildMenuItem(
+    BuildContext context,
+    IconData icon,
+    String label,
+    int index,
+  ) {
     final bool isSelected = selectedIndex == index;
     return GestureDetector(
-      onTap: () => onTap(index), // 여기서 index를 넘겨줍니다.
+      onTap: () => onTap(index),
       behavior: HitTestBehavior.opaque,
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
           const SizedBox(height: 5),
-          FaIcon(
+          Icon(
             icon,
-            size: 18,
-            color: isSelected ? AppColors.primary : AppColors.secondary,
+            size: 22,
+            color: isSelected
+                ? AppColors.primary(context)
+                : AppColors.secondary,
           ),
-          const SizedBox(height: 5),
+          const SizedBox(height: 2),
           Text(
             label,
             style: TextStyle(
-              fontSize: 10,
-              fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
-              color: isSelected ? AppColors.primary : AppColors.secondary,
+              fontSize: 12,
+              fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              color: isSelected
+                  ? AppColors.primary(context)
+                  : AppColors.secondary,
             ),
           ),
         ],
