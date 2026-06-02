@@ -28,9 +28,6 @@ class _SignUpState extends State<SignUp> {
       print("결과: $result");
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result == "success" ? "회원가입 성공!" : result)),
-      );
     } catch (e) {
       print("UI 단 에러 발생: $e");
     }

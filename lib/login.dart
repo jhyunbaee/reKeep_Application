@@ -8,7 +8,6 @@ import 'package:flutter_rekeep/auth_service.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 import 'package:flutter_rekeep/home.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 class Login extends StatefulWidget {
   const Login({super.key});
@@ -25,23 +24,12 @@ final TextEditingController _phoneController = TextEditingController();
 
 class _LoginState extends State<Login> {
   bool isLogin = true;
-  bool isRememberId = false;
 
   bool _isNicknameChecked = true;
   String _lastCheckedNickname = "";
 
   File? _selectedImage;
   final ImagePicker _picker = ImagePicker();
-
-  Future<void> _loadSavedId() async {
-    final prefs = await SharedPreferences.getInstance();
-    setState(() {
-      isRememberId = prefs.getBool('isRememberId') ?? false;
-      if (isRememberId) {
-        _emailController.text = prefs.getString('savedEmail') ?? "";
-      }
-    });
-  }
 
   void _handleSignUp() async {
     AuthService authService = AuthService();
@@ -71,9 +59,6 @@ class _LoginState extends State<Login> {
       }
 
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("회원가입 성공! 로그인해주세요.")),
-      );
 
       setState(() {
         isLogin = true;
@@ -97,15 +82,11 @@ class _LoginState extends State<Login> {
   }
 
   Future<void> _initializeFields() async {
-    await _loadSavedId();
-
-    if (!isRememberId) {
-      _emailController.clear();
-      _passwordController.clear();
-      _nameController.clear();
-      _nicknameController.clear();
-      _phoneController.clear();
-    }
+    _emailController.clear();
+    _passwordController.clear();
+    _nameController.clear();
+    _nicknameController.clear();
+    _phoneController.clear();
   }
 
   Future<void> _pickImage() async {
@@ -141,11 +122,9 @@ class _LoginState extends State<Login> {
           },
         ),
         title: Text(
-          isLogin ? "reKeep" : "회원가입",
+          isLogin ? "로그인" : "회원가입",
           style: TextStyle(
-            color: isLogin
-                ? AppColors.primary(context)
-                : AppColors.textPrimary(context),
+            color: AppColors.textPrimary(context),
             fontWeight: FontWeight.bold,
             fontSize: 18,
           ),
@@ -162,6 +141,16 @@ class _LoginState extends State<Login> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
+            // 로고 (로그인 화면에서만 표시)
+            if (isLogin)
+              Padding(
+                padding: const EdgeInsets.only(top: 10, bottom: 30),
+                child: Image.asset(
+                  'assets/icon/app_icon.png',
+                  height: 120,
+                ),
+              ),
+
             if (isLogin) ..._buildLoginFields() else ..._buildSignUpFields(),
 
             const SizedBox(height: 20),
@@ -195,7 +184,7 @@ class _LoginState extends State<Login> {
                   }
                 },
                 style: ElevatedButton.styleFrom(
-                  backgroundColor: AppColors.primary(context),
+                  backgroundColor: AppColors.primaryColor,
                   foregroundColor: AppColors.background(context),
                   elevation: 0,
                   shape: RoundedRectangleBorder(
@@ -211,43 +200,92 @@ class _LoginState extends State<Login> {
                 ),
               ),
             ),
-            const SizedBox(height: 30),
+            const SizedBox(height: 20),
 
-            Center(
-              child: GestureDetector(
-                onTap: () {
-                  setState(() {
-                    isLogin = !isLogin;
-                    _emailController.clear();
-                    _passwordController.clear();
-                    _nameController.clear();
-                    _nicknameController.clear();
-                    _phoneController.clear();
-                  });
-                },
-                child: RichText(
-                  text: TextSpan(
-                    style: TextStyle(
-                      color: AppColors.textPrimary(context),
-                      fontSize: 14,
-                    ),
-                    children: [
-                      TextSpan(
-                        text: isLogin ? "아직 계정이 없으신가요? " : "이미 계정이 있으신가요? ",
-                      ),
-                      TextSpan(
-                        text: isLogin ? "회원가입" : "로그인",
+            // 아이디 찾기 | 비밀번호 찾기 | 회원가입(로그인 화면일 때만)
+            if (isLogin)
+              Center(
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    GestureDetector(
+                      onTap: _showFindIdDialog,
+                      child: Text(
+                        "아이디 찾기",
                         style: TextStyle(
-                          color: AppColors.primary(context),
-                          fontWeight: FontWeight.bold,
-                          decoration: TextDecoration.underline,
+                          color: AppColors.textPrimary(context),
+                          fontSize: 14,
                         ),
                       ),
-                    ],
+                    ),
+                    _buildAuthDivider(),
+                    GestureDetector(
+                      onTap: _handleFindPassword,
+                      child: Text(
+                        "비밀번호 찾기",
+                        style: TextStyle(
+                          color: AppColors.textPrimary(context),
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                    _buildAuthDivider(),
+                    GestureDetector(
+                      onTap: () {
+                        setState(() {
+                          isLogin = false;
+                          _emailController.clear();
+                          _passwordController.clear();
+                          _nameController.clear();
+                          _nicknameController.clear();
+                          _phoneController.clear();
+                        });
+                      },
+                      child: Text(
+                        "회원가입",
+                        style: TextStyle(
+                          color: AppColors.textPrimary(context),
+                          fontSize: 14,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else
+              Center(
+                child: GestureDetector(
+                  onTap: () {
+                    setState(() {
+                      isLogin = true;
+                      _emailController.clear();
+                      _passwordController.clear();
+                      _nameController.clear();
+                      _nicknameController.clear();
+                      _phoneController.clear();
+                    });
+                  },
+                  child: RichText(
+                    text: TextSpan(
+                      style: TextStyle(
+                        color: AppColors.textPrimary(context),
+                        fontSize: 14,
+                      ),
+                      children: [
+                        const TextSpan(text: "이미 계정이 있으신가요? "),
+                        TextSpan(
+                          text: "로그인",
+                          style: TextStyle(
+                            color: AppColors.primaryColor,
+                            fontWeight: FontWeight.bold,
+                            decoration: TextDecoration.underline,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
             const SizedBox(height: 20),
 
             if (isLogin) ...[
@@ -274,40 +312,33 @@ class _LoginState extends State<Login> {
               ),
               const SizedBox(height: 20),
 
-              // 구글 로그인
-              SizedBox(
-                width: double.infinity,
-                height: 55,
-                child: OutlinedButton(
-                  onPressed: _handleGoogleSignIn,
-                  style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: AppColors.divider(context)),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Image.asset(
-                        'assets/google_logo.png',
-                        width: 20,
-                        height: 20,
+              // SNS 로그인 (원형 아이콘)
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  // 구글
+                  GestureDetector(
+                    onTap: _handleGoogleSignIn,
+                    child: Container(
+                      width: 52,
+                      height: 52,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.white,
+                        border: Border.all(color: AppColors.divider(context)),
                       ),
-                      const SizedBox(width: 10),
-                      Text(
-                        "Google로 로그인",
-                        style: TextStyle(
-                          fontSize: 16,
-                          color: AppColors.textPrimary(context),
-                          fontWeight: FontWeight.bold,
+                      child: Center(
+                        child: Image.asset(
+                          'assets/google_logo.png',
+                          width: 24,
+                          height: 24,
                         ),
                       ),
-                    ],
+                    ),
                   ),
-                ),
+                  // 애플 로그인 - Apple Developer Program 가입 후 활성화 예정
+                ],
               ),
-              // 애플 로그인 - Apple Developer Program 가입 후 활성화 예정
             ],
           ],
         ),
@@ -317,98 +348,15 @@ class _LoginState extends State<Login> {
 
   List<Widget> _buildLoginFields() {
     return [
-      _buildLabel("이메일"),
       _buildCustomTextField(
         hint: "이메일을 입력해주세요",
-        icon: Icons.email_outlined,
         controller: _emailController,
       ),
-      const SizedBox(height: 20),
-      _buildLabel("비밀번호"),
+      const SizedBox(height: 10),
       _buildCustomTextField(
         hint: "비밀번호를 입력해주세요",
-        icon: Icons.lock_outline,
         isPassword: true,
         controller: _passwordController,
-      ),
-
-      Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              SizedBox(
-                width: 24,
-                height: 24,
-                child: Checkbox(
-                  value: isRememberId,
-                  onChanged: (bool? val) async {
-                    final prefs = await SharedPreferences.getInstance();
-
-                    setState(() {
-                      isRememberId = val ?? false;
-                    });
-
-                    if (isRememberId) {
-                      if (_emailController.text.isNotEmpty) {
-                        await prefs.setString(
-                          'savedEmail',
-                          _emailController.text,
-                        );
-                        await prefs.setBool('isRememberId', true);
-                      } else {
-                        setState(() => isRememberId = false);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text("이메일을 먼저 입력해주세요.")),
-                        );
-                      }
-                    } else {
-                      await prefs.remove('savedEmail');
-                      await prefs.setBool('isRememberId', false);
-                    }
-                  },
-                  activeColor: AppColors.primary(context),
-                ),
-              ),
-              const SizedBox(width: 5),
-              const Text("아이디 저장", style: TextStyle(fontSize: 14)),
-            ],
-          ),
-
-          TextButton(
-            onPressed: () async {
-              if (_emailController.text.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("아이디 찾기/비밀번호 재설정을 위해 이메일을 입력해주세요."),
-                  ),
-                );
-                return;
-              }
-
-              try {
-                await FirebaseAuth.instance.sendPasswordResetEmail(
-                  email: _emailController.text,
-                );
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  const SnackBar(
-                    content: Text("입력하신 이메일로 비밀번호 재설정 메일을 보냈습니다."),
-                  ),
-                );
-              } catch (e) {
-                if (!mounted) return;
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(content: Text("오류: ${e.toString()}")),
-                );
-              }
-            },
-            child: const Text(
-              "아이디/비밀번호 찾기",
-              style: TextStyle(color: Colors.grey),
-            ),
-          ),
-        ],
       ),
     ];
   }
@@ -438,7 +386,7 @@ class _LoginState extends State<Login> {
             child: ElevatedButton(
               onPressed: _checkNicknameDuplicate,
               style: OutlinedButton.styleFrom(
-                backgroundColor: AppColors.primary(context),
+                backgroundColor: AppColors.primaryColor,
                 foregroundColor: AppColors.background(context),
                 elevation: 0,
                 shape: RoundedRectangleBorder(
@@ -489,6 +437,131 @@ class _LoginState extends State<Login> {
         controller: _passwordController,
       ),
     ];
+  }
+
+  Widget _buildAuthDivider() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      child: Text(
+        "|",
+        style: TextStyle(color: AppColors.secondary, fontSize: 13),
+      ),
+    );
+  }
+
+  // 아이디 찾기: 소셜/이메일 혼용이라 문의 안내로 처리
+  void _showFindIdDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          "아이디 찾기",
+          style: TextStyle(fontSize: 16),
+        ),
+        content: const Text(
+          "가입하신 이메일이 기억나지 않으시면,\n아래 이메일로 문의해 주세요.\n\nggonuuu@naver.com\n\n가입 정보를 확인해 도와드리겠습니다.",
+          style: TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text(
+              "확인",
+              style: TextStyle(color: AppColors.primaryColor),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 비밀번호 찾기: 이메일 입력받아 재설정 메일 발송
+  Future<void> _handleFindPassword() async {
+    final TextEditingController emailCtrl = TextEditingController();
+    await showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("비밀번호 찾기"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              "가입하신 이메일을 입력하시면\n비밀번호 재설정 메일을 보내드립니다.",
+              style: TextStyle(fontSize: 14),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              height: 55,
+              decoration: BoxDecoration(
+                color: AppColors.divider(context),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: TextField(
+                controller: emailCtrl,
+                keyboardType: TextInputType.emailAddress,
+                decoration: InputDecoration(
+                  hintText: "이메일 입력",
+                  isDense: true,
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(
+                    vertical: 15,
+                    horizontal: 15,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text(
+              "취소",
+              style: TextStyle(
+                color: AppColors.secondary,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () async {
+              final email = emailCtrl.text.trim();
+              if (email.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text("이메일을 입력해주세요.")),
+                );
+                return;
+              }
+              try {
+                await FirebaseAuth.instance.sendPasswordResetEmail(
+                  email: email,
+                );
+                if (!mounted) return;
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text("입력하신 이메일로 비밀번호 재설정 메일을 보냈습니다."),
+                  ),
+                );
+              } catch (e) {
+                if (!mounted) return;
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("오류: ${e.toString()}")),
+                );
+              }
+            },
+            child: Text(
+              "메일 보내기",
+              style: TextStyle(
+                color: AppColors.primaryColor,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _handleGoogleSignIn() async {
