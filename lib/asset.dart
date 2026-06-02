@@ -90,7 +90,7 @@ class _AssetState extends State<Asset> {
                       if (!context.mounted) return;
                       final go = await PremiumGate.show(
                         context,
-                        message: "3개월 이전 내역은 프리미엄 회원만 조회할 수 있어요.",
+                        message: "3개월 이전 내역은\n프리미엄 회원만 조회할 수 있어요.",
                       );
                       if (go == true) {
                         // TODO: 프리미엄 페이지로 이동
@@ -301,6 +301,7 @@ class _AssetState extends State<Asset> {
                           currentMonthRecordsOnly,
                           lastMonthSameDayExp,
                         ),
+                        const SizedBox(height: 25),
                         const BannerAdWidget(),
                         _buildFullDivider(),
                         _buildSectionHeader("자산 구성"),
@@ -315,10 +316,6 @@ class _AssetState extends State<Asset> {
                         _buildFullDivider(),
                         _buildSectionHeader(
                           "${_selectedMonth.month}월 거래 내역",
-                          trailing: _TransactionTooltipButton(
-                            tooltipText:
-                                "${now.month}월${now.day}일까지의 거래만 표시됩니다",
-                          ),
                         ),
                         _buildMonthlyTransactions(
                           monthlyDocs,
@@ -382,9 +379,13 @@ class _AssetState extends State<Asset> {
                       color: AppColors.secondary,
                     ),
                   ),
-                  _TransactionTooltipButton(
-                    tooltipText: "지난달 비교는 변동/고정지출을 제외한 금액입니다",
-                  ),
+                  (_selectedMonth.year == DateTime.now().year &&
+                          _selectedMonth.month == DateTime.now().month)
+                      ? _TransactionTooltipButton(
+                          tooltipText:
+                              "${DateTime.now().month}월 ${DateTime.now().day}일까지의 거래만 표시됩니다",
+                        )
+                      : const SizedBox.shrink(),
                 ],
               ),
               const SizedBox(height: 8),
@@ -487,7 +488,7 @@ class _AssetState extends State<Asset> {
             children: [
               _buildCompItem("현금", cash, AppColors.pointColor),
               const SizedBox(width: 8),
-              _buildCompItem("카드", card, AppColors.primary(context)),
+              _buildCompItem("카드", card, AppColors.primaryColor),
             ],
           ),
           const SizedBox(height: 10),
