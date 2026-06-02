@@ -1,6 +1,10 @@
+import 'dart:async';
+
+import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_rekeep/category.dart';
+import 'package:flutter_rekeep/login.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
@@ -9,6 +13,10 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 import 'dart:io';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:flutter_rekeep/calendar_seeder.dart';
+import 'package:flutter_rekeep/ads/interstitial_ad_manager.dart';
+import 'dart:convert';
+import 'package:http/http.dart' as http;
 
 class CalendarView extends StatefulWidget {
   const CalendarView({super.key});
@@ -17,65 +25,147 @@ class CalendarView extends StatefulWidget {
   State<CalendarView> createState() => _CalendarViewState();
 }
 
-// 데이터 모델 클래스
 class CategoryItem {
   final String name;
   final String icon;
   CategoryItem({required this.name, required this.icon});
 }
 
-// 상수는 클래스 밖에서 정의해도 무관
 const double labelWidth = 80.0;
 const double fieldHeight = 45.0;
 
 class _CalendarViewState extends State<CalendarView> {
   final String? currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
-  // 💡 기존의 List<dynamic> 포함된 선언을 모두 지우고 이것만 남기세요.
-  Map<DateTime, int> _events = {};
+  Map<DateTime, List<Map<String, dynamic>>> _events = {};
 
   @override
   void initState() {
     super.initState();
-    _loadEvents(); // 달력 데이터를 불러오는 함수 호출
+    _listenToEvents();
     placeController.addListener(_autoAssignCategory);
   }
 
-  Future<void> _loadEvents() async {
-    if (currentUserId == null) return;
-
-    final snapshot = await FirebaseFirestore.instance
+  void _loadSettings() async {
+    var doc = await FirebaseFirestore.instance
         .collection('users')
         .doc(currentUserId)
         .collection('recurring_expenses')
+        .doc('itemName')
         .get();
-
-    // 💡 여기도 Map<DateTime, int> 입니다.
-    Map<DateTime, int> fetchedEvents = {};
-
-    for (var doc in snapshot.docs) {
-      Map<String, dynamic> data = doc.data();
-      int amount = (data['amount'] ?? 0) as int;
-
-      var dayData = data['day'] ?? 1;
-      int day = 1;
-      if (dayData is String) {
-        day = int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1;
-      } else if (dayData is int) {
-        day = dayData;
-      }
-
-      DateTime date = DateTime(DateTime.now().year, DateTime.now().month, day);
-      DateTime normalizedDate = DateTime(date.year, date.month, date.day);
-
-      // 💡 합산 로직
-      fetchedEvents[normalizedDate] =
-          (fetchedEvents[normalizedDate] ?? 0) + amount;
+    if (doc.exists) {
+      setState(() {
+        fixedExpenseDisplayName = doc['fixedExpenseName'] ?? "고정지출";
+      });
     }
+  }
 
-    setState(() {
-      _events = fetchedEvents; // 💡 타입이 Map<DateTime, int>로 일치!
-    });
+  StreamSubscription? _eventsSubscription;
+
+  void _listenToEvents() {
+    if (currentUserId == null) return;
+
+    _eventsSubscription = FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUserId)
+        .collection('recurring_expenses')
+        .snapshots()
+        .listen((snapshot) async {
+          final fixedDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .collection('settings')
+              .doc('고정지출_items')
+              .get();
+          final variableDoc = await FirebaseFirestore.instance
+              .collection('users')
+              .doc(currentUserId)
+              .collection('settings')
+              .doc('변동지출_items')
+              .get();
+
+          final fixedNames = List<String>.from(fixedDoc.data()?['list'] ?? []);
+          final variableNames = List<String>.from(
+            variableDoc.data()?['list'] ?? [],
+          );
+
+          Map<DateTime, List<Map<String, dynamic>>> fetchedEvents = {};
+
+          const weekdayMap = {
+            '월요일': 1,
+            '화요일': 2,
+            '수요일': 3,
+            '목요일': 4,
+            '금요일': 5,
+            '토요일': 6,
+            '일요일': 7,
+          };
+
+          final now = DateTime.now();
+
+          void addEvent(
+            DateTime date,
+            String name,
+            int amount,
+            String expenseType,
+          ) {
+            fetchedEvents[date] ??= [];
+            fetchedEvents[date]!.add({
+              'name': name,
+              'amount': amount,
+              'expenseType': expenseType,
+            });
+          }
+
+          for (var doc in snapshot.docs) {
+            Map<String, dynamic> data = doc.data();
+            int amount = (data['amount'] ?? 0) as int;
+            String name = data['name'] ?? doc.id;
+            String period = (data['period'] ?? '매월').toString();
+            String dayData = (data['day'] ?? '1일').toString();
+            String expenseType =
+                data['expenseType'] ??
+                (variableNames.contains(name) ? '변동지출' : '고정지출');
+
+            final daysInMonth = DateUtils.getDaysInMonth(now.year, now.month);
+
+            if (period == '매월') {
+              int day =
+                  int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1;
+              if (day <= daysInMonth) {
+                addEvent(
+                  DateTime(now.year, now.month, day),
+                  name,
+                  amount,
+                  expenseType,
+                );
+              }
+            } else if (period == '매주') {
+              final targetWeekday = weekdayMap[dayData];
+              if (targetWeekday != null) {
+                for (int d = 1; d <= daysInMonth; d++) {
+                  final date = DateTime(now.year, now.month, d);
+                  if (date.weekday == targetWeekday) {
+                    addEvent(date, name, amount, expenseType);
+                  }
+                }
+              }
+            } else if (period == '매일') {
+              for (int d = 1; d <= daysInMonth; d++) {
+                addEvent(
+                  DateTime(now.year, now.month, d),
+                  name,
+                  amount,
+                  expenseType,
+                );
+              }
+            }
+          }
+          if (!mounted) return;
+          setState(() {
+            _events = fetchedEvents;
+          });
+        });
   }
 
   int actualExpense = 0;
@@ -97,29 +187,27 @@ class _CalendarViewState extends State<CalendarView> {
     return totalFixed;
   }
 
-  // 💡 CalendarView 내부에 추가할 함수
   Future<Map<DateTime, List<dynamic>>> _getCalendarEvents() async {
     Map<DateTime, List<dynamic>> events = {};
 
-    // 1. Firestore에서 고정지출 목록을 가져옴
     final snapshot = await FirebaseFirestore.instance
         .collection('users')
         .doc(currentUserId)
         .collection('recurring_expenses')
         .get();
 
-    // 2. 각 항목을 달력 날짜에 매핑
     for (var doc in snapshot.docs) {
-      int day = doc['day']; // 예: 10
+      int day = doc['day'];
       String name = doc['name'];
 
-      // 이번 달의 해당 날짜를 찾아서 이벤트 리스트에 추가
       DateTime date = DateTime(DateTime.now().year, DateTime.now().month, day);
       if (events[date] == null) events[date] = [];
       events[date]!.add(name);
     }
     return events;
   }
+
+  Function(String name, String icon)? _onCategoryAutoAssigned;
 
   DateTime _focusedDay = DateTime.now();
   DateTime tempDate = DateTime.now();
@@ -132,45 +220,46 @@ class _CalendarViewState extends State<CalendarView> {
   final TextEditingController memoController = TextEditingController();
 
   String category = '식비';
+  String fixedExpenseDisplayName = "고정지출";
 
   bool isOcrLoading = false;
-  // 카테고리 선택 메뉴가 열려있는지 여부를 추적하는 플래그
   bool _isMenuOpen = false;
 
-  Map<String, String> selectedCategory = {'name': '미분류', 'icon': '❓'};
+  Map<String, String> selectedCategory = {'name': '미분류', 'icon': '？'};
 
   bool _isUserTouchedCategory = false;
 
   File? _receiptImage;
 
-  // --- 데이터 로직 ---
   Stream<QuerySnapshot> _getRecordsStream() {
-    // 현재 로그인된 사용자의 ID를 실시간으로 가져옵니다.
     final currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
-    // 만약 로그아웃 상태라면 쿼리를 실행하지 않고 빈 스트림을 반환합니다. (에러 방지)
     if (currentUserId == null) {
       return const Stream.empty();
     }
 
     return FirebaseFirestore.instance
         .collection('users')
-        .doc(currentUserId) // userId 변수 대신 currentUserId 사용 권장
+        .doc(currentUserId)
         .collection('records')
         .where(
           'date',
-          isGreaterThanOrEqualTo: DateTime(
-            _focusedDay.year,
-            _focusedDay.month,
-            1,
+          isGreaterThanOrEqualTo: Timestamp.fromDate(
+            DateTime(
+              _focusedDay.year,
+              _focusedDay.month,
+              1,
+            ),
           ),
         )
         .where(
           'date',
-          isLessThanOrEqualTo: DateTime(
-            _focusedDay.year,
-            _focusedDay.month + 1,
-            0,
+          isLessThan: Timestamp.fromDate(
+            DateTime(
+              _focusedDay.year,
+              _focusedDay.month + 1,
+              1,
+            ),
           ),
         )
         .snapshots();
@@ -178,7 +267,7 @@ class _CalendarViewState extends State<CalendarView> {
 
   @override
   void dispose() {
-    // 위젯이 꺼질 때 리스너를 지워주어 메모리 누수를 방지합니다.
+    _eventsSubscription?.cancel();
     placeController.removeListener(_autoAssignCategory);
     placeController.dispose();
     amountController.dispose();
@@ -192,84 +281,345 @@ class _CalendarViewState extends State<CalendarView> {
     String text = placeController.text.trim();
     if (text.isEmpty) return;
 
-    // 카테고리 이름과 아이콘 세트 정의
-    Map<String, Map<String, String>> keywordMap = {
-      '식비': {'name': '식비', 'icon': '🍔'}, // 💡 앱에서 쓰시는 실제 아이콘으로 바꿔주세요!
-      '카페/간식': {'name': '카페/간식', 'icon': '☕'},
-      '교통': {'name': '교통', 'icon': '🚗'},
+    final Map<String, Map<String, String>> categoryMap = {
+      '식비': {'name': '식비', 'icon': '🍴'},
+      '카페/간식': {'name': '카페/간식', 'icon': '🥤'},
+      '마트/편의점': {'name': '마트/편의점', 'icon': '🛒'},
+      '교통': {'name': '교통', 'icon': '🚘'},
       '쇼핑': {'name': '쇼핑', 'icon': '🛍️'},
+      '의료': {'name': '의료', 'icon': '🏥'},
+      '주거/통신': {'name': '주거/통신', 'icon': '🏠'},
       '문화/여가': {'name': '문화/여가', 'icon': '🎬'},
+      '뷰티/미용': {'name': '뷰티/미용', 'icon': '💄'},
+      '반려동물': {'name': '반려동물', 'icon': '🐶'},
+      '취미': {'name': '취미', 'icon': '🎨'},
+      '교육': {'name': '교육', 'icon': '📚'},
+      '여행': {'name': '여행', 'icon': '✈️'},
+      '술/유흥': {'name': '술/유흥', 'icon': '🍺'},
     };
 
-    // 키워드 단어 리스트 정의
-    Map<String, List<String>> keywords = {
+    final Map<String, List<String>> keywords = {
       '식비': [
         '식당',
         '밥',
         '배달',
-        '마트',
         '식료품',
         '고기',
         '국밥',
         '짜장면',
+        '짬뽕',
         '치킨',
         '피자',
         '한식',
         '중식',
         '일식',
+        '분식',
+        '김밥',
+        '라면',
+        '돈까스',
+        '햄버거',
+        '맥도날드',
+        '버거킹',
+        'KFC',
+        '롯데리아',
+        '맘스터치',
+        '배달의민족',
+        '한집배달'
+            '요기요',
+        '쿠팡이츠',
+        '도미노',
+        '굽네',
+        '교촌',
+        '네네',
+        '서브웨이',
+        '이삭',
+        '죠스',
+        '김치찌개',
+        '삼겹살',
+        '냉면',
+        '우동',
+        '순대',
+        '떡볶이',
+        '포장마차',
+        '식사',
+        '점심',
+        '저녁',
+        '아침',
       ],
       '카페/간식': [
         '카페',
         '커피',
         '스타벅스',
+        '이디야',
+        '빽다방',
+        '메가커피',
+        '컴포즈',
+        '투썸',
+        '할리스',
+        '폴바셋',
+        '블루보틀',
+        '던킨',
+        '배스킨',
+        '베스킨',
         '디저트',
         '빵',
         '베이커리',
-        '편의점',
+        '파리바게트',
+        '뚜레쥬르',
+        '성심당',
+        '아이스크림',
+        '케이크',
+        '마카롱',
+        '도넛',
+        '와플',
+        '버블티',
+        '쥬스',
+        '음료',
+        '간식',
+        '과자',
+      ],
+      '마트/편의점': [
         'CU',
         'GS25',
         '세븐일레븐',
-        '아이스크림',
+        '이마트24',
+        '미니스톱',
+        '편의점',
+        '이마트',
+        '홈플러스',
+        '롯데마트',
+        '코스트코',
+        '다이소',
+        '마트',
+        '슈퍼',
+        '시장',
+        '마켓',
       ],
-      '교통': ['택시', '버스', '지하철', '주유', '충전', 'KTX', '기차', '대리', '주차'],
-      '쇼핑': ['쿠팡', '네이버쇼핑', '옷', '의류', '신발', '백화점', '올리브영'],
-      '문화/여가': ['영화', 'CGV', '넷플릭스', '유튜브', '노래방', '헬스', '운동', '게임'],
+      '교통': [
+        '택시',
+        '버스',
+        '지하철',
+        '주유',
+        '주유소',
+        'KTX',
+        'SRT',
+        '기차',
+        '대리',
+        '주차',
+        '톨게이트',
+        '고속도로',
+        '카카오T',
+        '우버',
+        'GS칼텍스',
+        'SK에너지',
+        'S-OIL',
+        '오일뱅크',
+        '충전',
+        '전기차',
+        '항공',
+        '공항',
+      ],
+      '쇼핑': [
+        '쿠팡',
+        '네이버쇼핑',
+        '옷',
+        '의류',
+        '신발',
+        '백화점',
+        '아울렛',
+        '올리브영',
+        '무신사',
+        '29CM',
+        '지그재그',
+        '에이블리',
+        '유니클로',
+        '자라',
+        'H&M',
+        '나이키',
+        '아디다스',
+        '뉴발란스',
+        '롯데백화점',
+        '현대백화점',
+        '신세계',
+        '갤러리아',
+        '가방',
+        '악세서리',
+        '시계',
+      ],
+      '의료': [
+        '병원',
+        '의원',
+        '치과',
+        '한의원',
+        '약국',
+        '클리닉',
+        '정형외과',
+        '내과',
+        '피부과',
+        '안과',
+        '이비인후과',
+        '산부인과',
+        '소아과',
+        '심리',
+        '상담',
+        '검진',
+        '건강',
+      ],
+      '주거/통신': [
+        '통신',
+        'SKT',
+        'KT',
+        'LG U+',
+        '알뜰폰',
+        '인터넷',
+        '관리비',
+        '전기세',
+        '가스비',
+        '수도',
+        '월세',
+        '렌트',
+        '보험',
+        '청구',
+      ],
+      '문화/여가': [
+        '영화',
+        'CGV',
+        '롯데시네마',
+        '메가박스',
+        '노래방',
+        '헬스',
+        '운동',
+        '게임',
+        '책',
+        '도서',
+        '교보문고',
+        '예스24',
+        '알라딘',
+        '공연',
+        '전시',
+        '뮤지컬',
+        '콘서트',
+        '스포츠',
+        '수영',
+        '요가',
+        '필라테스',
+        '클라이밍',
+        '볼링',
+        '당구',
+        '골프',
+        '테니스',
+      ],
+      '뷰티/미용': [
+        '미용실',
+        '헤어',
+        '네일',
+        '피부',
+        '마사지',
+        '왁싱',
+        '속눈썹',
+        '화장품',
+        '코스메틱',
+        '이니스프리',
+        '에뛰드',
+        '아리따움',
+        '미샤',
+      ],
+      '반려동물': [
+        '동물병원',
+        '펫',
+        '애견',
+        '고양이',
+        '강아지',
+        '사료',
+        '간식',
+        '펫샵',
+        '반려',
+      ],
+      '취미': [
+        '취미',
+        '공방',
+        '악기',
+        '기타',
+        '피아노',
+        '그림',
+        '사진',
+        '낚시',
+        '등산',
+        '캠핑',
+        '여가',
+      ],
+      '교육': [
+        '학원',
+        '과외',
+        '교육',
+        '학습',
+        '영어',
+        '수학',
+        '학교',
+        '대학교',
+        '어학원',
+        '인강',
+        '클래스',
+        '강의',
+        '강좌',
+        '수강',
+      ],
+      '여행': [
+        '여행',
+        '호텔',
+        '숙박',
+        '에어비앤비',
+        '펜션',
+        '리조트',
+        '항공권',
+        '여행사',
+        '투어',
+        '면세점',
+        '해외',
+        '제주',
+      ],
+      '술/유흥': [
+        '술',
+        '맥주',
+        '소주',
+        '막걸리',
+        '와인',
+        '위스키',
+        '바',
+        '포차',
+        '호프',
+        '이자카야',
+        '클럽',
+        '유흥',
+      ],
     };
 
     for (var entry in keywords.entries) {
       String categoryName = entry.key;
-      List<String> wordList = entry.value;
-
-      for (String keyword in wordList) {
-        if (text.contains(keyword)) {
-          if (selectedCategory['name'] != categoryName) {
-            // 🚨 핵심: 바텀시트 내부의 화면도 새로고침하기 위해 이 리스너 안에서는
-            // 아래의 3단계 팝업 띄우는 곳에서 처리하거나 공통으로 갱신되도록 유도합니다.
-            // 바텀시트 전용 state 변경이 필요하므로, 이 함수를 바텀시트 내부 세터와 연동시킵니다.
-            _updateModalCategory(
-              categoryName,
-              keywordMap[categoryName]!['icon']!,
-            );
-          }
+      for (String keyword in entry.value) {
+        if (text.toLowerCase().contains(keyword.toLowerCase())) {
+          // ✅ 콜백으로 로컬 변수 업데이트
+          _onCategoryAutoAssigned?.call(
+            categoryName,
+            categoryMap[categoryName]!['icon']!,
+          );
           return;
         }
       }
     }
   }
 
-  // 모달 내부의 State Setter를 보관할 변수
   StateSetter? _modalStateSetter;
 
   void _updateModalCategory(String name, String icon) {
     if (_modalStateSetter != null) {
       _modalStateSetter!(() {
-        selectedCategory = {'name': name, 'icon': icon};
+        // selectedCategory = {'name': name, 'icon': icon};
       });
     }
   }
 
   void _resetForm() {
-    // 새 입력을 받을 때는 수동 터치 플래그를 다시 false로 리셋해줍니다.
     _isUserTouchedCategory = false;
     placeController.clear();
     amountController.clear();
@@ -278,7 +628,7 @@ class _CalendarViewState extends State<CalendarView> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: AppColors.background(context),
       floatingActionButtonLocation: FloatingActionButtonLocation.endFloat,
       floatingActionButton: Padding(
         padding: const EdgeInsets.only(
@@ -291,29 +641,39 @@ class _CalendarViewState extends State<CalendarView> {
                 width: 55,
                 height: 55,
                 child: FloatingActionButton(
-                  backgroundColor: AppColors.primary,
+                  backgroundColor: AppColors.primary(context),
                   shape: const CircleBorder(),
-                  onPressed: () => setState(() => _isMenuOpen = true),
-                  child: const Icon(Icons.add, color: Colors.white, size: 28),
+                  onPressed: () {
+                    final user = FirebaseAuth.instance.currentUser;
+
+                    if (user == null) {
+                      _showLoginRequiredDialog(context);
+                    } else {
+                      setState(() => _isMenuOpen = true);
+                    }
+                  },
+                  child: Icon(
+                    Icons.add,
+                    color: AppColors.background(context),
+                    size: 28,
+                  ),
                 ),
               ),
       ),
       appBar: AppBar(
-        backgroundColor: Colors.white,
-        surfaceTintColor: Colors.white,
+        backgroundColor: AppColors.background(context),
+        surfaceTintColor: AppColors.background(context),
         scrolledUnderElevation: 0,
         elevation: 0,
-        automaticallyImplyLeading: false, // 기본 뒤로가기 버튼 공간 제거
-        // titleSpacing을 0으로 하고 title에 Row를 꽉 채웁니다.
+        automaticallyImplyLeading: false,
         titleSpacing: 0,
         title: Padding(
           padding: const EdgeInsets.symmetric(
             horizontal: 24.0,
-          ), // 좌우 여백 24px 고정
+          ),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              // 1. 왼쪽 버튼 (이전 달)
               GestureDetector(
                 onTap: () => setState(
                   () => _focusedDay = DateTime(
@@ -322,24 +682,22 @@ class _CalendarViewState extends State<CalendarView> {
                   ),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_left,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
 
-              // 2. 중앙 월 표시
               Text(
                 DateFormat('M월').format(_focusedDay),
-                style: const TextStyle(
+                style: TextStyle(
                   fontWeight: FontWeight.bold,
-                  color: Colors.black,
-                  fontSize: 20,
+                  color: AppColors.textPrimary(context),
+                  fontSize: 18,
                 ),
               ),
 
-              // 3. 오른쪽 버튼 (다음 달)
               GestureDetector(
                 onTap: () => setState(
                   () => _focusedDay = DateTime(
@@ -348,9 +706,9 @@ class _CalendarViewState extends State<CalendarView> {
                   ),
                 ),
                 behavior: HitTestBehavior.opaque,
-                child: const Icon(
+                child: Icon(
                   Icons.chevron_right,
-                  color: Colors.black,
+                  color: AppColors.textPrimary(context),
                   size: 28,
                 ),
               ),
@@ -379,20 +737,25 @@ class _CalendarViewState extends State<CalendarView> {
                     dailyRecords[dateKey] = [];
                   }
 
-                  // 2. docId가 포함된 data를 리스트에 추가
                   dailyRecords[dateKey]!.add(data);
 
-                  // 3. 총계 계산
                   if (data['type'] == '수입') {
                     totalIncome += (data['amount'] as int);
-                  } else if (data['type'] == '지출' || data['type'] == '이체') {
-                    // ✅ 이체도 지출 합계에 포함
+                  } else if (data['type'] == '지출' || data['type'] == '이체(지출)') {
                     totalExpense += (data['amount'] as int);
                   }
                 }
               }
 
-              // 선택된 날짜에 해당하는 내역들 가져오기
+              _events.forEach((date, items) {
+                if (date.year == _focusedDay.year &&
+                    date.month == _focusedDay.month) {
+                  for (var item in items) {
+                    totalExpense += (item['amount'] as int);
+                  }
+                }
+              });
+
               final selectedDateKey = DateFormat(
                 'yyyy-MM-dd',
               ).format(_selectedDay ?? DateTime.now());
@@ -406,7 +769,6 @@ class _CalendarViewState extends State<CalendarView> {
                     _buildNoSpendHighlight(dailyRecords),
                     Padding(
                       padding: const EdgeInsets.only(
-                        // 달력
                         left: 12,
                         right: 12,
                         top: 5,
@@ -416,7 +778,13 @@ class _CalendarViewState extends State<CalendarView> {
                         firstDay: DateTime.utc(2020, 1, 1),
                         lastDay: DateTime.utc(2030, 12, 31),
                         focusedDay: _focusedDay,
-                        availableGestures: AvailableGestures.none,
+                        availableGestures: AvailableGestures.horizontalSwipe,
+                        onPageChanged: (focusedDay) {
+                          setState(() {
+                            _focusedDay = focusedDay;
+                            _selectedDay = null;
+                          });
+                        },
                         daysOfWeekHeight: 20,
                         headerVisible: false,
                         rowHeight: 75,
@@ -437,40 +805,45 @@ class _CalendarViewState extends State<CalendarView> {
                             selectedDay.day,
                           );
 
-                          // 💡 일반 지출이 있거나, 고정지출이 있는 경우 모두 상세창을 띄움
                           bool hasRecord =
                               (dailyRecords.containsKey(dateKey) &&
                               dailyRecords[dateKey]!.isNotEmpty);
-                          bool hasFixed = (_events[normalizedDay] ?? 0) > 0;
+                          bool hasFixed =
+                              (_events[normalizedDay]?.isNotEmpty ?? false);
 
-                          if (hasRecord || hasFixed) {
-                            _showDetailListSheet();
-                          }
+                          _showDetailListSheet();
                         },
                         calendarBuilders: CalendarBuilders(
                           markerBuilder: (context, date, events) {
                             if (date.month != _focusedDay.month) return null;
 
-                            // 1. 데이터 준비
                             DateTime normalizedDay = DateTime(
                               date.year,
                               date.month,
                               date.day,
                             );
-                            int fixedAmount = _events[normalizedDay] ?? 0;
+                            int fixedAmount = (_events[normalizedDay] ?? [])
+                                .fold(
+                                  0,
+                                  (sum, item) => sum + (item['amount'] as int),
+                                );
 
-                            // 2. 무지출 여부 확인 (고정지출이 있어도 무지출 점을 안 찍음)
                             String dateKey = DateFormat(
                               'yyyy-MM-dd',
                             ).format(date);
 
-                            // 💡 조건 변경: dailyRecords가 비어있고 + 고정지출도 0일 때만 점 표시
-                            bool hasNoExpense =
-                                (!dailyRecords.containsKey(dateKey) ||
-                                    dailyRecords[dateKey]!.isEmpty) &&
-                                fixedAmount == 0;
+                            bool hasExpense = false;
+                            if (dailyRecords.containsKey(dateKey)) {
+                              for (var record in dailyRecords[dateKey]!) {
+                                if (record['type'] == '지출' ||
+                                    record['type'] == '이체(지출)') {
+                                  hasExpense = true;
+                                  break;
+                                }
+                              }
+                            }
+                            bool hasNoExpense = !hasExpense && fixedAmount == 0;
 
-                            // 3. 아무것도 없으면 패스
                             if (!hasNoExpense && fixedAmount == 0) return null;
 
                             return Positioned(
@@ -480,14 +853,13 @@ class _CalendarViewState extends State<CalendarView> {
                               child: Column(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  // 무지출 점 (고정지출이 있으면 이 if문이 false가 되어 안 나옴)
                                   if (hasNoExpense)
                                     Container(
                                       width: 5,
                                       height: 5,
                                       margin: const EdgeInsets.only(bottom: 2),
-                                      decoration: const BoxDecoration(
-                                        color: AppColors.pointColor,
+                                      decoration: BoxDecoration(
+                                        color: AppColors.primary(context),
                                         shape: BoxShape.circle,
                                       ),
                                     ),
@@ -496,72 +868,65 @@ class _CalendarViewState extends State<CalendarView> {
                             );
                           },
 
-                          // 2. 기본 날짜 빌더
                           defaultBuilder: (context, date, _) => _buildDayCell(
                             date,
                             (date.weekday == 7 || date.weekday == 6)
                                 ? AppColors.secondary
-                                : Colors.black,
+                                : AppColors.textPrimary(context),
                             dailyRecords,
-                            _events, // 💡 추가: 고정지출 데이터 넘김
+                            _events,
                             false,
                           ),
 
-                          // 3. 오늘 날짜 빌더
                           todayBuilder: (context, date, _) => _buildDayCell(
                             date,
-                            AppColors.primary,
+                            AppColors.primary(context),
                             dailyRecords,
-                            _events, // 💡 추가: 고정지출 데이터 넘김
+                            _events,
                             isSameDay(_selectedDay, date),
                             isToday: true,
                           ),
-                          // 4. 선택된 날짜 빌더
                           selectedBuilder: (context, date, _) {
                             bool isToday = isSameDay(date, DateTime.now());
                             return _buildDayCell(
                               date,
                               isToday
-                                  ? AppColors.primary
+                                  ? AppColors.primary(context)
                                   : (date.weekday == 7 || date.weekday == 6
                                         ? AppColors.secondary
-                                        : Colors.black),
+                                        : AppColors.textPrimary(context)),
                               dailyRecords,
-                              _events, // 💡 추가: 고정지출 데이터 넘김
-                              false, // 선택 시 Bold 처리 여부
+                              _events,
+                              false,
                               isToday: isToday,
                             );
                           },
                         ),
-                        calendarStyle: const CalendarStyle(
+                        calendarStyle: CalendarStyle(
                           markersMaxCount: 0,
                           markerDecoration: BoxDecoration(
-                            color: Colors.red, // 점 색상
+                            color: AppColors.primary(context),
                             shape: BoxShape.circle,
                           ),
                           outsideDaysVisible: false,
-                          // 선택된 날짜의 동그라미 배경을 투명하게 만듭니다.
                           selectedDecoration: BoxDecoration(
-                            color: Colors.transparent,
+                            color: AppColors.textPrimary(context),
                             shape: BoxShape.circle,
                           ),
-                          // 오늘 날짜의 배경도 투명하게 설정 (필요 시)
                           todayDecoration: BoxDecoration(
-                            color: Colors.transparent,
+                            color: AppColors.textPrimary(context),
                             shape: BoxShape.circle,
                           ),
-                          // 배경이 투명해지면 글자가 안 보일 수 있으니 텍스트 스타일을 지정합니다.
                           selectedTextStyle: TextStyle(
-                            color: Colors.black, // 선택된 날짜의 글자색 강조
+                            color: AppColors.textPrimary(context),
                             fontWeight: FontWeight.normal,
                           ),
                           todayTextStyle: TextStyle(
-                            color: AppColors.primary, // 오늘 날짜의 글자색 강조
+                            color: AppColors.primary(context),
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                         eventLoader: (day) {
-                          // 1. 날짜 정규화
                           DateTime normalizedDay = DateTime(
                             day.year,
                             day.month,
@@ -571,22 +936,24 @@ class _CalendarViewState extends State<CalendarView> {
 
                           List<dynamic> events = [];
 
-                          // 2. 일반 지출/수입 데이터 추가
                           if (dailyRecords.containsKey(dateKey) &&
                               dailyRecords[dateKey]!.isNotEmpty) {
                             events.addAll(dailyRecords[dateKey]!);
                           }
 
-                          // 3. 고정지출 데이터 추가
-                          int fixedAmount = _events[normalizedDay] ?? 0;
+                          int fixedAmount = (_events[normalizedDay] ?? []).fold(
+                            0,
+                            (sum, item) => sum + (item['amount'] as int),
+                          );
+
                           if (fixedAmount > 0) {
                             events.add({
                               'isFixed': true,
                               'amount': fixedAmount,
-                            }); // 임시 데이터 추가
+                            });
                           }
 
-                          return events; // 이제 리스트가 비어있지 않으므로 클릭이 됩니다!
+                          return events;
                         },
                       ),
                     ),
@@ -597,18 +964,16 @@ class _CalendarViewState extends State<CalendarView> {
           ),
 
           if (_isMenuOpen) ...[
-            // 반투명 배경
             GestureDetector(
               onTap: () => setState(() => _isMenuOpen = false),
               child: Container(
                 width: double.infinity,
                 height: double.infinity,
-                color: Colors.white.withOpacity(0.8),
+                color: AppColors.background(context).withOpacity(0.9),
               ),
             ),
-            // 3종 메뉴 및 메인 버튼 정렬 Column
             Positioned(
-              bottom: 24, // 💡 위치 조절: 여기서 bottom, right를 키우면 버튼이 안쪽으로 이동합니다.
+              bottom: 24,
               right: 24,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
@@ -619,10 +984,10 @@ class _CalendarViewState extends State<CalendarView> {
                     label: "영수증 촬영하기",
                     onTap: () {
                       setState(() => _isMenuOpen = false);
-                      //_pickImageFromCamera();
+                      _pickImageFromCamera();
                     },
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   _buildSubMenuButton(
                     icon: Icons.image_rounded,
                     label: "갤러리에서 영수증 가져오기",
@@ -631,7 +996,7 @@ class _CalendarViewState extends State<CalendarView> {
                       _pickImageFromGallery();
                     },
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
                   _buildSubMenuButton(
                     icon: Icons.edit_rounded,
                     label: "직접 입력하기",
@@ -640,18 +1005,17 @@ class _CalendarViewState extends State<CalendarView> {
                       _showAddRecordSheet();
                     },
                   ),
-                  const SizedBox(height: 16),
-                  // 닫기용 X 버튼
+                  const SizedBox(height: 15),
                   SizedBox(
-                    width: 55, // 버튼 가로 크기
-                    height: 55, // 버튼 세로 크기
+                    width: 55,
+                    height: 55,
                     child: FloatingActionButton(
-                      backgroundColor: AppColors.primary,
+                      backgroundColor: AppColors.primary(context),
                       shape: const CircleBorder(),
                       onPressed: () => setState(() => _isMenuOpen = false),
-                      child: const Icon(
+                      child: Icon(
                         Icons.close,
-                        color: Colors.white,
+                        color: AppColors.background(context),
                         size: 24,
                       ),
                     ),
@@ -665,7 +1029,52 @@ class _CalendarViewState extends State<CalendarView> {
     );
   }
 
-  // 💡 이미지와 동일한 레이아웃을 생성하는 서브 메뉴 스타일 위젯 빌더
+  void _showLoginRequiredDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text(
+          "로그인 필요",
+          style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+        ),
+        content: const Text(
+          "내역을 추가하려면 로그인이 필요합니다.\n로그인 페이지로 이동할까요?",
+          style: TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text(
+              "취소",
+              style: TextStyle(
+                color: AppColors.secondary,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () {
+              Navigator.pop(context);
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const Login()),
+              );
+            },
+            child: Text(
+              "확인",
+              style: TextStyle(
+                color: AppColors.primary(context),
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildSubMenuButton({
     required IconData icon,
     required String label,
@@ -677,26 +1086,26 @@ class _CalendarViewState extends State<CalendarView> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
+            // + 버튼 목록
             child: Text(
               label,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 14,
                 fontWeight: FontWeight.bold,
-                color: Colors.black,
+                color: AppColors.textPrimary(context),
               ),
             ),
           ),
-          const SizedBox(width: 12),
-          // 아이콘 동그라미 버튼
+          const SizedBox(width: 10),
           Container(
             width: 55,
             height: 55,
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: AppColors.background(context),
               shape: BoxShape.circle,
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.2),
+                  color: AppColors.secondary.withOpacity(0.1),
                   blurRadius: 5,
                   offset: const Offset(0, 2),
                 ),
@@ -704,7 +1113,7 @@ class _CalendarViewState extends State<CalendarView> {
             ),
             child: Icon(
               icon,
-              color: AppColors.primary,
+              color: AppColors.primary(context),
               size: 20,
             ),
           ),
@@ -727,8 +1136,6 @@ class _CalendarViewState extends State<CalendarView> {
         setState(() {
           _receiptImage = File(pickedFile.path);
         });
-
-        // 🚀 [수정] 이미지를 단순 로드하는 것에 그치지 않고, 인공지능 OCR 엔진으로 분석을 시작합니다!
         await _analyzeReceipt(pickedFile.path);
       } else {
         print("이미지 선택이 취소되었습니다.");
@@ -738,219 +1145,435 @@ class _CalendarViewState extends State<CalendarView> {
     }
   }
 
-  // 🤖 구글 AI ML Kit를 이용해 영수증을 분석하고 데이터를 리턴하는 형태로 수정
+  Future<void> _pickImageFromCamera() async {
+    final ImagePicker picker = ImagePicker();
+
+    try {
+      final XFile? pickedFile = await picker.pickImage(
+        source: ImageSource.camera, // ✅ 갤러리 대신 카메라
+      );
+
+      if (pickedFile != null) {
+        print("카메라 촬영 성공: ${pickedFile.path}");
+        setState(() {
+          _receiptImage = File(pickedFile.path);
+        });
+        await _analyzeReceipt(pickedFile.path);
+      } else {
+        print("촬영이 취소되었습니다.");
+      }
+    } catch (e) {
+      print("카메라 오류: $e");
+    }
+  }
+
   Future<Map<String, dynamic>?> _analyzeReceipt(String imagePath) async {
     final textRecognizer = TextRecognizer(script: TextRecognitionScript.korean);
     final inputImage = InputImage.fromFilePath(imagePath);
 
     try {
-      // 💡 [수정] 굳이 화면을 방해하는 기존 SnackBar 코드는 과감히 삭제합니다!
-
       final RecognizedText recognizedText = await textRecognizer.processImage(
         inputImage,
       );
       String scannedText = recognizedText.text;
-      print("=== [OCR 추출 원본 텍스트] ===");
-      print(scannedText);
-      print("===============================");
+
+      // OCR이 콤마를 마침표·중간점 등으로 잘못 인식하는 경우 정규화
+      // 숫자 1~3자리 뒤에 오는 '.', '·' → ',' 로 변환
+      scannedText = scannedText.replaceAllMapped(
+        RegExp(r'(\d{1,3})[.·](\d{3})(?=\D|$)'),
+        (m) => '\${m.group(1)},\${m.group(2)}',
+      );
 
       List<String> lines = scannedText
           .split('\n')
           .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
           .toList();
       String compactText = scannedText.replaceAll(' ', '');
 
       String detectedStore = "";
-      int? detectedAmount;
-      String detectedMemo = "";
-
-      int year = DateTime.now().year;
-      int month = DateTime.now().month;
-      int day = DateTime.now().day;
-      int hour = 12;
-      int minute = 0;
-
-      // 1️⃣ 사용처/상호명 정밀 필터링
-      for (String line in lines) {
-        String upperLine = line.toUpperCase().replaceAll(' ', '');
-        if ((upperLine.contains("CU") ||
-                upperLine.contains("GS25") ||
-                upperLine.contains("세븐")) &&
-            upperLine.contains("점")) {
-          detectedStore = line;
+      final List<Map<String, String>> brandKeywords = [
+        {'keyword': 'CU', 'name': 'CU'},
+        {'keyword': 'GS25', 'name': 'GS25'},
+        {'keyword': 'GS 25', 'name': 'GS25'},
+        {'keyword': '세븐일레븐', 'name': '세븐일레븐'},
+        {'keyword': '이마트24', 'name': '이마트24'},
+        {'keyword': '미니스톱', 'name': '미니스톱'},
+        {'keyword': '스타벅스', 'name': '스타벅스'},
+        {'keyword': 'STARBUCKS', 'name': '스타벅스'},
+        {'keyword': '맥도날드', 'name': '맥도날드'},
+        {'keyword': 'McDonald', 'name': '맥도날드'},
+        {'keyword': '버거킹', 'name': '버거킹'},
+        {'keyword': 'KFC', 'name': 'KFC'},
+        {'keyword': '롯데리아', 'name': '롯데리아'},
+        {'keyword': '올리브영', 'name': '올리브영'},
+        {'keyword': '이마트', 'name': '이마트'},
+        {'keyword': '홈플러스', 'name': '홈플러스'},
+        {'keyword': '코스트코', 'name': '코스트코'},
+        {'keyword': '다이소', 'name': '다이소'},
+        {'keyword': '카카오', 'name': '카카오'},
+        {'keyword': '배민', 'name': '배달의민족'},
+        {'keyword': '배민1', 'name': '배달의민족'},
+        {'keyword': '알뜰배달', 'name': '배달의민족'},
+        {'keyword': '한집배달', 'name': '배달의민족'},
+        {'keyword': '배달의민족', 'name': '배달의민족'},
+        {'keyword': '쿠팡', 'name': '쿠팡'},
+        {'keyword': '네이버', 'name': '네이버'},
+        {'keyword': 'baskin', 'name': '배스킨라빈스'},
+        {'keyword': 'robbins', 'name': '배스킨라빈스'},
+        {'keyword': 'BASKIN', 'name': '배스킨라빈스'},
+        {'keyword': '베스킨', 'name': '배스킨라빈스'},
+        {'keyword': '배스킨', 'name': '배스킨라빈스'},
+        {'keyword': '파리바게뜨', 'name': '파리바게뜨'},
+        {'keyword': '뚜레쥬르', 'name': '뚜레쥬르'},
+        {'keyword': '이디야', 'name': '이디야'},
+        {'keyword': '메가커피', 'name': '메가커피'},
+        {'keyword': '빽다방', 'name': '빽다방'},
+      ];
+      for (var brand in brandKeywords) {
+        if (compactText.toUpperCase().contains(
+          brand['keyword']!.toUpperCase(),
+        )) {
+          detectedStore = brand['name']!;
           break;
         }
       }
       if (detectedStore.isEmpty) {
-        for (String line in lines) {
-          if (line.endsWith("점") && line.length >= 4 && !line.contains("방문")) {
-            detectedStore = line;
-            break;
-          }
-        }
-      }
-      if (detectedStore.isEmpty) {
-        for (int i = 0; i < lines.length && i < 6; i++) {
+        final skipPatterns = RegExp(
+          r'영수증|매출|승인|사업자|TEL|전화|FAX|\d{3}-\d{4}|\d{9,}|^\d+$',
+        );
+        for (int i = 0; i < lines.length && i < 8; i++) {
           String line = lines[i];
-          if (line.isEmpty ||
-              line.contains("영수증") ||
-              line.contains("매출") ||
-              line.contains("승인") ||
-              RegExp(r'^\d+:\d+$').hasMatch(line.replaceAll(' ', '')) ||
-              line.length < 2) {
-            continue;
-          }
-          detectedStore = line;
-          break;
+          if (line.length < 2 || skipPatterns.hasMatch(line)) continue;
+          if (RegExp(r'^[\d\s\-\.\:\*\/\\]+$').hasMatch(line)) continue;
+          detectedStore = line
+              .replaceAll(RegExp(r'\s*(점|지점|매장|store)$'), '')
+              .trim();
+          if (detectedStore.isNotEmpty) break;
         }
       }
       if (detectedStore.isEmpty) detectedStore = "일반 가맹점";
 
-      // 2️⃣ 날짜 및 시간 파싱
-      final RegExp dateRegex = RegExp(r'(\d{2,4})[-./](\d{2})[-./](\d{2})');
-      final RegExp timeRegex = RegExp(r'(\d{2}):(\d{2})(?::(\d{2}))?');
+      int year = DateTime.now().year;
+      int month = DateTime.now().month;
+      int day = DateTime.now().day;
+      int hour = 12, minute = 0;
+      bool dateFound = false;
+
+      // 날짜 패턴: YYYY-MM-DD, YYYY/MM/DD, YYYY.MM.DD
+      final dateRegex4 = RegExp(r'(\d{4})[-./](\d{1,2})[-./](\d{1,2})');
+      // 날짜 패턴: YY-MM-DD, YY/MM/DD
+      final dateRegex2 = RegExp(r'(\d{2})[-./](\d{1,2})[-./](\d{1,2})');
+      // 한글 날짜: 2026년 05월 31일
+      final dateRegexKr = RegExp(r'(\d{4})년\s*(\d{1,2})월\s*(\d{1,2})일');
+      // 시간 패턴
+      final timeRegex = RegExp(r'(\d{2}):(\d{2})(?::(\d{2}))?');
 
       for (String line in lines) {
-        String cleanLine = line.replaceAll(' ', '');
-        final dateMatch = dateRegex.firstMatch(cleanLine);
-        if (dateMatch != null) {
-          int parsedYear = int.parse(dateMatch.group(1)!);
-          if (parsedYear < 100) parsedYear += 2000;
-          year = parsedYear;
-          month = int.parse(dateMatch.group(2)!);
-          day = int.parse(dateMatch.group(3)!);
+        String clean = line.replaceAll(RegExp(r'\[[^\]]*\]'), '').trim();
+        String cleanNoSpace = clean.replaceAll(' ', '');
+
+        // 한글 날짜 먼저 시도
+        final dkr = dateRegexKr.firstMatch(clean);
+        if (dkr != null) {
+          year = int.parse(dkr.group(1)!);
+          month = int.parse(dkr.group(2)!);
+          day = int.parse(dkr.group(3)!);
+          dateFound = true;
         }
-        if (cleanLine.contains("-") ||
-            cleanLine.contains("/") ||
-            cleanLine.contains("POS")) {
-          final timeMatch = timeRegex.firstMatch(cleanLine);
-          if (timeMatch != null) {
-            hour = int.parse(timeMatch.group(1)!);
-            minute = int.parse(timeMatch.group(2)!);
+
+        if (!dateFound) {
+          final dm4 = dateRegex4.firstMatch(cleanNoSpace);
+          if (dm4 != null) {
+            int y = int.parse(dm4.group(1)!);
+            int m = int.parse(dm4.group(2)!);
+            int d = int.parse(dm4.group(3)!);
+            if (y >= 2020 && m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+              year = y;
+              month = m;
+              day = d;
+              dateFound = true;
+            }
           }
         }
-      }
-      if (hour == 12 && minute == 0) {
-        final fallbackTimeMatch = timeRegex.firstMatch(compactText);
-        if (fallbackTimeMatch != null) {
-          hour = int.parse(fallbackTimeMatch.group(1)!);
-          minute = int.parse(fallbackTimeMatch.group(2)!);
+
+        if (!dateFound) {
+          final dm2 = dateRegex2.firstMatch(cleanNoSpace);
+          if (dm2 != null) {
+            int y = 2000 + int.parse(dm2.group(1)!);
+            int m = int.parse(dm2.group(2)!);
+            int d = int.parse(dm2.group(3)!);
+            if (m >= 1 && m <= 12 && d >= 1 && d <= 31) {
+              year = y;
+              month = m;
+              day = d;
+              dateFound = true;
+            }
+          }
         }
+
+        // 시간 파싱 (날짜와 같은 줄 또는 별도 줄)
+        final tm = timeRegex.firstMatch(cleanNoSpace);
+        if (tm != null) {
+          int h = int.parse(tm.group(1)!);
+          if (h >= 0 && h <= 23) {
+            hour = h;
+            minute = int.parse(tm.group(2)!);
+          }
+        }
+
+        if (dateFound && hour != 12) break;
       }
       DateTime detectedDate = DateTime(year, month, day, hour, minute);
 
-      // 3️⃣ 결제금액 찾기
-      final RegExp moneyRegex = RegExp(
-        r'\b\d{1,3}(?:,\d{3})+(?!\d)|\b\d{4,6}\b',
-      );
-      final allMatches = moneyRegex.allMatches(scannedText);
-      Map<int, int> amountFrequency = {};
-      List<int> priceCandidates = [];
+      int? detectedAmount;
 
-      for (var m in allMatches) {
-        String cleanNum = m.group(0)!.replaceAll(',', '');
-        int? parsed = int.tryParse(cleanNum);
-        if (parsed != null &&
-            parsed >= 1000 &&
-            parsed <= 500000 &&
-            parsed != 3094013922 &&
-            parsed != 114448625 &&
-            !cleanNum.startsWith("30940")) {
-          priceCandidates.add(parsed);
-          amountFrequency[parsed] = (amountFrequency[parsed] ?? 0) + 1;
-        }
-      }
-
-      int mostFrequentAmount = 0;
-      int maxCount = 0;
-      amountFrequency.forEach((amt, count) {
-        if (count > maxCount) {
-          maxCount = count;
-          mostFrequentAmount = amt;
-        } else if (count == maxCount && amt > mostFrequentAmount) {
-          mostFrequentAmount = amt;
-        }
-      });
-
-      if (maxCount >= 2 && mostFrequentAmount >= 1000) {
-        detectedAmount = mostFrequentAmount;
-      } else if (priceCandidates.isNotEmpty) {
-        priceCandidates.sort();
-        detectedAmount = priceCandidates.last;
-      }
-
-      // 4️⃣ 메모 필드용 상품 내역 추출
-      int itemStartIndex = -1;
-      int itemEndIndex = -1;
-      for (int i = 0; i < lines.length; i++) {
-        String line = lines[i].replaceAll(' ', '');
-        if (line.contains("사업자") ||
-            line.contains("TEL:") ||
-            line.contains("2026-") ||
-            line.contains("26/") ||
-            line.contains("POS-")) {
-          itemStartIndex = i + 1;
-        }
-        if (line.contains("총구매액") ||
-            line.contains("결제금액") ||
-            line.contains("사용금액") ||
-            line.contains("상품할인") ||
-            line.contains("부가세") ||
-            line.contains("합계")) {
-          if (itemEndIndex == -1) itemEndIndex = i;
-          break;
-        }
-      }
-
-      if (itemStartIndex != -1 &&
-          itemEndIndex != -1 &&
-          itemStartIndex < itemEndIndex) {
-        List<String> items = [];
-        for (int i = itemStartIndex; i < itemEndIndex; i++) {
-          String itemLine = lines[i].trim();
-          if (itemLine.isEmpty ||
-              itemLine == "X" ||
-              itemLine == "*" ||
-              itemLine == "H" ||
-              RegExp(r'^\d+$').hasMatch(itemLine) ||
-              RegExp(r'^[\d,]+$').hasMatch(itemLine)) {
-            continue;
-          }
-          items.add(itemLine);
-        }
-        detectedMemo = items.join(', ');
-      }
-
-      Map<String, String> categoryMap = {'name': '미분류', 'icon': '❓'};
-      final List<String> foodKeywords = [
-        "CU",
-        "GS25",
-        "편의점",
-        "마트",
-        "식당",
-        "카페",
-        "배달",
-        "푸드",
+      final amountKeywords = [
+        '결제금액',
+        '청구금액',
+        '사용금액',
+        '합계금액',
+        '총구매액',
+        '총구매',
+        '받을금액',
+        '받은금액',
+        '총매출액',
+        '총결제금액',
+        '합계',
+        '총합계',
+        'TOTAL',
+        'Total',
+        'total',
+        '승인금액',
+        '거래금액',
       ];
-      for (String keyword in foodKeywords) {
-        if (detectedStore.toUpperCase().contains(keyword) ||
-            scannedText.toUpperCase().contains(keyword)) {
-          categoryMap = {'name': '식비', 'icon': '🍔'};
+
+      // 결제금액이 아닌 금액(기프티콘 잔액 등)을 제외하기 위한 키워드
+      final excludeKeywords = [
+        '잔액',
+        '잔여',
+        '잔여금액',
+        '잔여액',
+        '남은금액',
+        '충전',
+        '충전금액',
+        '포인트',
+        '적립',
+        '상품금액', // 기프티콘 원가(사용금액과 다를 수 있음)
+        '액면',
+        '액면가',
+      ];
+
+      // 1차: 키워드 포함 라인에서 금액 추출 (역순으로 - 합계가 보통 하단)
+      for (String line in lines.reversed.toList()) {
+        String clean = line.replaceAll(' ', '');
+        // 잔액/포인트 등 결제금액이 아닌 줄은 건너뜀
+        if (excludeKeywords.any((kw) => clean.contains(kw))) continue;
+        bool hasKeyword = amountKeywords.any((kw) => clean.contains(kw));
+        if (hasKeyword) {
+          // 음수(할인) 제외
+          if (clean.contains('-')) continue;
+          final match = RegExp(
+            r'(\d{1,3}(?:,\d{3})+|\d{3,7})',
+          ).firstMatch(clean);
+          if (match != null) {
+            int? val = int.tryParse(match.group(0)!.replaceAll(',', ''));
+            if (val != null && val >= 100) {
+              detectedAmount = val;
+              break;
+            }
+          }
+        }
+      }
+
+      // 2차: 키워드 없으면 콤마 있는 금액 중 가장 큰 값
+      //      (단, 잔액/포인트 등 제외 키워드가 있는 줄은 제외)
+      if (detectedAmount == null) {
+        List<int> candidates = [];
+        for (String line in lines) {
+          String clean = line.replaceAll(' ', '');
+          if (excludeKeywords.any((kw) => clean.contains(kw))) continue;
+          final lineMatches = RegExp(r'\d{1,3}(?:,\d{3})+').allMatches(clean);
+          for (var m in lineMatches) {
+            int? val = int.tryParse(m.group(0)!.replaceAll(',', ''));
+            if (val != null && val >= 1000 && val <= 1000000) {
+              candidates.add(val);
+            }
+          }
+        }
+        if (candidates.isNotEmpty) {
+          candidates.sort();
+          detectedAmount = candidates.last;
+        }
+      }
+
+      // 3차: 콤마 없는 4~6자리 숫자 (예: 15000)
+      if (detectedAmount == null) {
+        for (String line in lines.reversed.toList()) {
+          String clean = line.replaceAll(' ', '').replaceAll(',', '');
+          if (excludeKeywords.any((kw) => clean.contains(kw))) continue;
+          bool hasKeyword = amountKeywords.any((kw) => line.contains(kw));
+          if (hasKeyword) {
+            final match = RegExp(
+              r'(\d{4,7})',
+            ).firstMatch(clean.replaceAll(RegExp(r'[^\d]'), ' ').trim());
+            if (match != null) {
+              int? val = int.tryParse(match.group(0)!);
+              if (val != null && val >= 1000 && val <= 1000000) {
+                detectedAmount = val;
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      Map<String, String> categoryMap = {'name': '기타', 'icon': '✨'};
+      final categoryRules = [
+        {
+          'keywords': ['CU', 'GS25', '세븐일레븐', '이마트24', '미니스톱', '편의점'],
+          'name': '마트/편의점',
+          'icon': '🛒',
+        },
+
+        {
+          'keywords': ['배스킨', '베스킨', 'baskin', 'robbins', '아이스크림', '빙수'],
+          'name': '카페/간식',
+          'icon': '🥤',
+        },
+
+        {
+          'keywords': ['스타벅스', '카페', '커피', '베이커리', '빵', '디저트', '파리바게뜨', '뚜레쥬르'],
+          'name': '카페/간식',
+          'icon': '🥤',
+        },
+        {
+          'keywords': [
+            '맥도날드',
+            '버거킹',
+            'KFC',
+            '롯데리아',
+            '식당',
+            '음식점',
+            '한식',
+            '중식',
+            '일식',
+            '치킨',
+            '피자',
+            '분식',
+            '고기',
+            '삼겹',
+            '돈까스',
+            '김밥',
+            '배민'
+                '배민1'
+                '배달의민족',
+          ],
+          'name': '식비',
+          'icon': '🍴',
+        },
+        {
+          'keywords': ['이마트', '홈플러스', '롯데마트', '코스트코', '마트'],
+          'name': '마트/편의점',
+          'icon': '🛒',
+        },
+        {
+          'keywords': ['올리브영', '다이소', '쇼핑', '패션', '옷', '신발', '가방'],
+          'name': '쇼핑',
+          'icon': '🛍️',
+        },
+        {
+          'keywords': ['지하철', '버스', '택시', '카카오T', 'T머니', '교통'],
+          'name': '교통',
+          'icon': '🚘',
+        },
+        {
+          'keywords': ['병원', '약국', '의원', '치과', '한의원', '클리닉'],
+          'name': '의료',
+          'icon': '🏥',
+        },
+        {
+          'keywords': ['술', '맥주', '소주', '막걸리', '와인', '바', '포차'],
+          'name': '술/유흥',
+          'icon': '🍺',
+        },
+      ];
+      for (var rule in categoryRules) {
+        final keywords = rule['keywords'] as List<String>;
+        bool matched = keywords.any(
+          (kw) =>
+              detectedStore.contains(kw) ||
+              compactText.toUpperCase().contains(kw.toUpperCase()),
+        );
+        if (matched) {
+          categoryMap = {
+            'name': rule['name'] as String,
+            'icon': rule['icon'] as String,
+          };
           break;
         }
       }
+
+      String detectedPayment = "";
+      if (currentUserId != null) {
+        final cardSnapshot = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(currentUserId)
+            .collection('my_cards')
+            .get();
+        for (var doc in cardSnapshot.docs) {
+          final data = doc.data();
+          final cardNumber = (data['cardNumber'] ?? '').toString().trim();
+          if (cardNumber.isEmpty) continue;
+
+          final cardPatterns = [
+            RegExp(r'\*+[\s\-]*' + cardNumber, caseSensitive: false),
+            RegExp(r'\*[\s\-]*' + cardNumber),
+            RegExp(r'[\-\s]' + cardNumber + r'(?:\s|$)', multiLine: true),
+            RegExp(cardNumber + r'$', multiLine: true),
+          ];
+
+          bool matched =
+              cardPatterns.any((p) => p.hasMatch(scannedText)) ||
+              RegExp(
+                r'[^\d]' + cardNumber + r'$',
+                multiLine: true,
+              ).hasMatch(compactText);
+
+          if (matched) {
+            String cardName = data['cardName'] ?? '';
+            detectedPayment = '$cardName($cardNumber)';
+            break;
+          }
+        }
+      }
+      if (detectedPayment.isEmpty) {
+        if (compactText.contains('카카오페이') || compactText.contains('카카오Pay'))
+          detectedPayment = '카카오페이';
+        else if (compactText.contains('네이버페이'))
+          detectedPayment = '네이버페이';
+        else if (compactText.contains('삼성페이'))
+          detectedPayment = '삼성페이';
+        else if (compactText.contains('애플페이'))
+          detectedPayment = '애플페이';
+        else if (compactText.contains('토스'))
+          detectedPayment = '토스';
+      }
+
+      final bool isCash =
+          compactText.contains('현금영수증') || compactText.contains('현금');
 
       Map<String, dynamic> receiptData = {
         'place': detectedStore,
         'amount': detectedAmount ?? 0,
-        'memo': detectedMemo,
+        'memo': '',
         'category': categoryMap,
         'type': '지출',
         'date': Timestamp.fromDate(detectedDate),
+        'paymentMethod': isCash ? '현금' : detectedPayment,
+        'bankName': isCash ? '현금' : detectedPayment,
       };
 
-      // 💡 [핵심 교정 1] 이미 바텀시트가 열려있는 상태(로딩 중)라면 데이터를 맵으로 리턴만 하고,
-      // 최초로 갤러리에서 가져오는 상태라면 직접 바텀시트를 열어 화면에 띄우도록 완전 지능화합니다.
       if (isOcrLoading) {
         return receiptData;
       } else {
@@ -959,18 +1582,18 @@ class _CalendarViewState extends State<CalendarView> {
       }
     } catch (e) {
       print("OCR 분석 중 에러 발생: $e");
+      _showAddRecordSheet();
       return null;
     } finally {
       textRecognizer.close();
     }
   }
 
-  // --- 2. UI 구성 요소 ---
   Widget _buildDayCell(
     DateTime date,
     Color textColor,
     Map dailyRecords,
-    Map<DateTime, int> fixedExpenses,
+    Map<DateTime, List<Map<String, dynamic>>> fixedExpenses,
     bool isSelected, {
     bool isToday = false,
   }) {
@@ -983,16 +1606,21 @@ class _CalendarViewState extends State<CalendarView> {
       for (var r in records) {
         if (r['type'] == '수입') {
           income += (r['amount'] as int);
-        } else if (r['type'] == '지출' || r['type'] == '이체') {
-          // ✅ 이체도 일별 지출에 포함
+        } else if (r['type'] == '지출' || r['type'] == '이체(지출)') {
           expense += (r['amount'] as int);
         }
       }
     }
 
-    // 💡 고정지출 금액 가져오기
     DateTime normalizedDate = DateTime(date.year, date.month, date.day);
-    int fixedAmount = fixedExpenses[normalizedDate] ?? 0;
+    int fixedAmount = (fixedExpenses[normalizedDate] ?? []).fold(
+      0,
+      (sum, item) => sum + (item['amount'] as int),
+    );
+
+    List<String> fixedNames = (fixedExpenses[normalizedDate] ?? [])
+        .map((item) => item['name'] as String)
+        .toList();
 
     return Column(
       children: [
@@ -1001,47 +1629,54 @@ class _CalendarViewState extends State<CalendarView> {
           '${date.day}',
           style: TextStyle(
             color: textColor,
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: isToday
                 ? FontWeight.bold
                 : (isSelected ? FontWeight.bold : FontWeight.normal),
           ),
         ),
-        const SizedBox(height: 4),
+        if (fixedNames.isNotEmpty) const SizedBox(height: 5),
         SizedBox(
           height: 26,
-          child: Column(
-            children: [
-              if (income > 0)
-                Text(
-                  "+${NumberFormat('#,###').format(income)}",
-                  style: const TextStyle(
-                    fontSize: 8,
-                    color: AppColors.primary,
-                    height: 1.1,
-                  ),
+          child: Builder(
+            builder: (context) {
+              List<({String text, Color color})> items = [];
+
+              if (income > 0) {
+                items.add((
+                  text: "+${NumberFormat('#,###').format(income)}",
+                  color: AppColors.primary(context),
+                ));
+              }
+              if (expense + fixedAmount > 0) {
+                items.add((
+                  text:
+                      "-${NumberFormat('#,###').format(expense + fixedAmount)}",
+                  color: AppColors.secondary,
+                ));
+              }
+
+              const int maxVisible = 2;
+              final visibleItems = items.take(maxVisible).toList();
+
+              return Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: Column(
+                  children: [
+                    ...visibleItems.map(
+                      (item) => Text(
+                        item.text,
+                        style: TextStyle(
+                          fontSize: 8,
+                          color: item.color,
+                          height: 1.2,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-              if (expense > 0)
-                Text(
-                  "-${NumberFormat('#,###').format(expense)}",
-                  style: const TextStyle(
-                    fontSize: 8,
-                    color: AppColors.secondary,
-                    height: 1.1,
-                  ),
-                ),
-              // 💡 고정지출 금액 표시 (일반 지출과 동일한 스타일, 색상만 보라색)
-              if (fixedAmount > 0)
-                Text(
-                  "-${NumberFormat('#,###').format(fixedAmount)}",
-                  style: const TextStyle(
-                    fontSize: 8,
-                    color: Colors.purple, // 고정지출용 색상
-                    fontWeight: FontWeight.bold, // 고정지출은 Bold 처리
-                    height: 1.1,
-                  ),
-                ),
-            ],
+              );
+            },
           ),
         ),
       ],
@@ -1053,11 +1688,11 @@ class _CalendarViewState extends State<CalendarView> {
       margin: const EdgeInsets.only(left: 24, right: 24, top: 24, bottom: 0),
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(15),
+        color: AppColors.background(context),
+        borderRadius: BorderRadius.circular(10),
         boxShadow: [
           BoxShadow(
-            color: AppColors.secondary.withOpacity(0.2),
+            color: AppColors.secondary.withOpacity(0.1),
             blurRadius: 10,
             offset: const Offset(0, 0),
           ),
@@ -1068,21 +1703,21 @@ class _CalendarViewState extends State<CalendarView> {
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              _amountRow("수입", income, AppColors.primary),
-              _amountRow("지출", expense, AppColors.pointColor),
+              _amountRow("수입", income, AppColors.primary(context)),
+              _amountRow("지출", expense, AppColors.secondary),
             ],
           ),
           Divider(
             height: 30,
             thickness: 1,
-            color: AppColors.dividerColor,
+            color: AppColors.divider(context),
           ),
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
                 "현 자산",
-                style: TextStyle(fontSize: 14, color: AppColors.secondary),
+                style: TextStyle(fontSize: 12, color: AppColors.secondary),
               ),
               Text(
                 "${NumberFormat('#,###').format(income - expense)}원",
@@ -1103,14 +1738,14 @@ class _CalendarViewState extends State<CalendarView> {
       children: [
         Text(
           title,
-          style: const TextStyle(color: AppColors.secondary, fontSize: 14),
+          style: const TextStyle(color: AppColors.secondary, fontSize: 12),
         ),
-        const SizedBox(width: 10),
+        const SizedBox(width: 20),
         Text(
           "${NumberFormat('#,###').format(amount)}원",
           style: TextStyle(
             color: color,
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: FontWeight.bold,
           ),
         ),
@@ -1121,40 +1756,56 @@ class _CalendarViewState extends State<CalendarView> {
   Widget _buildNoSpendHighlight(Map dailyRecords) {
     int noSpendCount = 0;
     int daysInMonth = DateTime(_focusedDay.year, _focusedDay.month + 1, 0).day;
-    for (int i = 1; i <= daysInMonth; i++) {
+    int lastDay = daysInMonth;
+
+    for (int i = 1; i <= lastDay; i++) {
       String dateKey = DateFormat(
         'yyyy-MM-dd',
       ).format(DateTime(_focusedDay.year, _focusedDay.month, i));
-      if (!dailyRecords.containsKey(dateKey) ||
-          dailyRecords[dateKey]!.isEmpty) {
-        noSpendCount++;
+
+      bool hasExpenseOnDay = false;
+      // 일반 지출 확인
+      if (dailyRecords.containsKey(dateKey)) {
+        for (var record in dailyRecords[dateKey]!) {
+          if (record['type'] == '지출' || record['type'] == '이체(지출)') {
+            hasExpenseOnDay = true;
+            break;
+          }
+        }
       }
+      // 고정지출 확인
+      DateTime normalizedDate = DateTime(
+        _focusedDay.year,
+        _focusedDay.month,
+        i,
+      );
+      int fixed = (_events[normalizedDate] ?? []).fold(
+        0,
+        (sum, item) => sum + (item['amount'] as int),
+      );
+      if (fixed > 0) hasExpenseOnDay = true;
+
+      if (!hasExpenseOnDay) noSpendCount++;
     }
+
     return Container(
       margin: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
       padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 15),
       decoration: BoxDecoration(
-        color: AppColors.primary.withAlpha(20),
+        color: AppColors.primary(context).withAlpha(20),
         borderRadius: BorderRadius.circular(10),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.secondary.withOpacity(0.1),
-            blurRadius: 10,
-            offset: const Offset(0, 0),
-          ),
-        ],
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.circle, size: 6, color: AppColors.pointColor),
-              SizedBox(width: 6),
-              Text(
+              Icon(Icons.circle, size: 6, color: AppColors.primary(context)),
+              const SizedBox(width: 5),
+              const Text(
                 "무지출 일수",
                 style: TextStyle(
-                  fontSize: 14,
+                  fontSize: 12,
                   color: AppColors.secondary,
                 ),
               ),
@@ -1162,7 +1813,7 @@ class _CalendarViewState extends State<CalendarView> {
           ),
           Text(
             "총 $noSpendCount일",
-            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
           ),
         ],
       ),
@@ -1174,28 +1825,21 @@ class _CalendarViewState extends State<CalendarView> {
 
     if (docId != null && docId.isNotEmpty) {
       if (initialData != null && initialData['receiptImage'] != null) {
-        // 내역에 저장된 이미지 경로가 있다면 복원합니다.
         String path = initialData['receiptImage'].toString();
         _receiptImage = path.isNotEmpty ? File(path) : null;
       } else {
-        // 이미지 없이 저장되었던 일반 내역 수정이라면 잔상을 지웁니다.
         _receiptImage = null;
       }
     } else {
-      // 2. [새로 추가 모드] (docId가 없는 경우)
       if (isOcrLoading) {
-        // 외부에서 이미지를 강제로 null 초기화하지 않고 그대로 유지합니다.
       } else if (initialData != null && initialData.containsKey('place')) {
-        // 이때는 이미 메인 버튼 리스너에서 _receiptImage를 세팅했으므로 절대로 건드리지 않고 유지합니다!
       } else {
-        // ➕ [+] 버튼 -> [직접 입력]을 눌러 들어온 순수 추가 모드일 때만 잔상을 깨끗이 비워줍니다.
         _receiptImage = null;
       }
     }
 
     int originalAmount = 0;
 
-    // 💡 [완벽 매핑] initialData에 담겨온 영수증 데이터 혹은 파이어베이스 데이터를 컨트롤러 초기값으로 꽂아줍니다!
     final TextEditingController amountController = TextEditingController(
       text: initialData?['amount'] != null
           ? "${nf.format(initialData!['amount'])}원"
@@ -1208,14 +1852,17 @@ class _CalendarViewState extends State<CalendarView> {
       text: initialData?['memo'] ?? "",
     );
 
-    // [위치 정확함] 수정 모드 및 영수증 모드일 때 originalAmount 세팅
     if (initialData != null) {
       originalAmount = initialData['amount'] ?? 0;
     } else {
       originalAmount = 0;
     }
 
-    String selectedType = initialData?['type'] ?? '지출';
+    String selectedType = () {
+      final t = initialData?['type'] ?? '지출';
+      if (t == '이체') return '이체(지출)'; // 기존 데이터 호환
+      return t;
+    }();
 
     DateTime tempDate;
 
@@ -1225,18 +1872,241 @@ class _CalendarViewState extends State<CalendarView> {
       tempDate = _selectedDay ?? DateTime.now();
     }
 
-    // 💡 카테고리 초기값 설정 대응
     Map<String, String> selectedCategory = initialData?['category'] != null
         ? Map<String, String>.from(initialData?['category'])
-        : {
-            'name': '식비',
-            'icon': '🍔',
-          }; // 영수증일 땐 식비가 기본, 아닐 땐 미분류 처리는 아래서 유연하게 대응 가능
+        : {'name': '미분류', 'icon': '？'};
 
-    // 만약 영수증이 아니고 진짜 일반 추가 모드라면 '미분류'로 세팅되게 안전장치 추가
     if (initialData == null) {
-      selectedCategory = {'name': '미분류', 'icon': '❓'};
+      selectedCategory = {'name': '미분류', 'icon': '？'};
     }
+
+    // ✅ 추가 - 바텀시트 안에서 직접 placeController 감지
+    void autoAssign() {
+      if (_isUserTouchedCategory) return;
+      if (selectedType != '지출' && selectedType != '이체(지출)') return;
+      String text = placeController.text.trim();
+      if (text.isEmpty) return;
+
+      final Map<String, Map<String, String>> cMap = {
+        '식비': {'name': '식비', 'icon': '🍴'},
+        '카페/간식': {'name': '카페/간식', 'icon': '🥤'},
+        '마트/편의점': {'name': '마트/편의점', 'icon': '🛒'},
+        '교통': {'name': '교통', 'icon': '🚘'},
+        '쇼핑': {'name': '쇼핑', 'icon': '🛍️'},
+        '의료': {'name': '의료', 'icon': '🏥'},
+        '주거/통신': {'name': '주거/통신', 'icon': '🏠'},
+        '문화/여가': {'name': '문화/여가', 'icon': '🎬'},
+        '뷰티/미용': {'name': '뷰티/미용', 'icon': '💄'},
+        '반려동물': {'name': '반려동물', 'icon': '🐶'},
+        '취미': {'name': '취미', 'icon': '🎨'},
+        '교육': {'name': '교육', 'icon': '📚'},
+        '여행': {'name': '여행', 'icon': '✈️'},
+        '술/유흥': {'name': '술/유흥', 'icon': '🍺'},
+      };
+
+      final Map<String, List<String>> kw = {
+        '식비': [
+          '식당',
+          '밥',
+          '배달',
+          '고기',
+          '국밥',
+          '치킨',
+          '피자',
+          '한식',
+          '중식',
+          '일식',
+          '분식',
+          '김밥',
+          '라면',
+          '돈까스',
+          '햄버거',
+          '맥도날드',
+          '버거킹',
+          'KFC',
+          '롯데리아',
+          '배달의민족',
+          '요기요',
+          '쿠팡이츠',
+          '교촌',
+          '굽네',
+          '서브웨이',
+          '삼겹살',
+          '냉면',
+          '우동',
+          '떡볶이',
+          '식사',
+          '점심',
+          '저녁',
+          '아침',
+        ],
+        '카페/간식': [
+          '카페',
+          '커피',
+          '스타벅스',
+          '이디야',
+          '빽다방',
+          '메가커피',
+          '컴포즈',
+          '투썸',
+          '할리스',
+          '던킨',
+          '배스킨',
+          '베스킨',
+          '디저트',
+          '빵',
+          '베이커리',
+          '파리바게트',
+          '뚜레쥬르',
+          '아이스크림',
+          '케이크',
+          '음료',
+          '간식',
+        ],
+        '마트/편의점': [
+          'CU',
+          'GS25',
+          '세븐일레븐',
+          '이마트24',
+          '미니스톱',
+          '편의점',
+          '이마트',
+          '홈플러스',
+          '롯데마트',
+          '코스트코',
+          '다이소',
+          '마트',
+          '슈퍼',
+        ],
+        '교통': [
+          '택시',
+          '버스',
+          '지하철',
+          '주유',
+          'KTX',
+          'SRT',
+          '기차',
+          '대리',
+          '주차',
+          '카카오T',
+          '충전',
+          '항공',
+        ],
+        '쇼핑': [
+          '쿠팡',
+          '옷',
+          '의류',
+          '신발',
+          '백화점',
+          '아울렛',
+          '올리브영',
+          '무신사',
+          '29CM',
+          '유니클로',
+          '자라',
+          '나이키',
+          '아디다스',
+          '롯데백화점',
+          '현대백화점',
+          '신세계',
+          '가방',
+        ],
+        '의료': [
+          '병원',
+          '의원',
+          '치과',
+          '한의원',
+          '약국',
+          '클리닉',
+          '정형외과',
+          '내과',
+          '피부과',
+          '안과',
+          '검진',
+        ],
+        '주거/통신': [
+          '통신',
+          'SKT',
+          'KT',
+          'LG',
+          '인터넷',
+          '관리비',
+          '전기세',
+          '가스비',
+          '수도',
+          '월세',
+          '보험',
+        ],
+        '문화/여가': [
+          '영화',
+          'CGV',
+          '롯데시네마',
+          '메가박스',
+          '노래방',
+          '헬스',
+          '운동',
+          '게임',
+          '도서',
+          '교보문고',
+          '공연',
+          '전시',
+          '뮤지컬',
+          '콘서트',
+          '수영',
+          '요가',
+          '필라테스',
+          '클라이밍',
+          '볼링',
+          '골프',
+          '테니스',
+        ],
+        '뷰티/미용': ['미용실', '헤어', '네일', '피부', '마사지', '왁싱', '화장품', '이니스프리', '에뛰드'],
+        '반려동물': ['동물병원', '펫', '애견', '고양이', '강아지', '사료', '펫샵', '반려'],
+        '취미': ['공방', '악기', '기타', '피아노', '그림', '사진', '낚시', '등산', '캠핑'],
+        '교육': ['학원', '과외', '교육', '영어', '수학', '어학원', '인강', '클래스', '강의', '수강'],
+        '여행': [
+          '여행',
+          '호텔',
+          '숙박',
+          '에어비앤비',
+          '펜션',
+          '리조트',
+          '항공권',
+          '여행사',
+          '면세점',
+          '제주',
+        ],
+        '술/유흥': [
+          '술',
+          '맥주',
+          '소주',
+          '막걸리',
+          '와인',
+          '위스키',
+          '바',
+          '포차',
+          '호프',
+          '이자카야',
+          '클럽',
+        ],
+      };
+
+      for (var entry in kw.entries) {
+        for (String keyword in entry.value) {
+          if (text.toLowerCase().contains(keyword.toLowerCase())) {
+            if (!_isUserTouchedCategory) {
+              _modalStateSetter?.call(() {
+                selectedCategory = cMap[entry.key]!;
+              });
+            }
+            return;
+          }
+        }
+      }
+    }
+
+    placeController.removeListener(_autoAssignCategory);
+    placeController.addListener(autoAssign);
 
     String selectedPayment = initialData?['paymentMethod'] ?? "";
     String selectedBankName = initialData?['bankName'] ?? "";
@@ -1263,7 +2133,7 @@ class _CalendarViewState extends State<CalendarView> {
           Navigator.pop(context);
         },
         child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 14), //결제수단
+          padding: const EdgeInsets.symmetric(vertical: 14),
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -1271,11 +2141,14 @@ class _CalendarViewState extends State<CalendarView> {
                 child: Text(
                   name,
                   style: TextStyle(
+                    // 결제수단 관리
                     fontSize: 15,
                     fontWeight: isSelected
                         ? FontWeight.bold
                         : FontWeight.normal,
-                    color: isSelected ? AppColors.primary : Colors.black,
+                    color: isSelected
+                        ? AppColors.primary(context)
+                        : AppColors.textPrimary(context),
                   ),
                   overflow: TextOverflow.clip,
                   maxLines: 1,
@@ -1283,14 +2156,13 @@ class _CalendarViewState extends State<CalendarView> {
                 ),
               ),
               if (isSelected)
-                const Icon(Icons.check, color: AppColors.primary, size: 18),
+                Icon(Icons.check, color: AppColors.primary(context), size: 18),
             ],
           ),
         ),
       );
     }
 
-    // --- 금액 입력 리스너 (원, 콤마 추가 로직) ---
     amountController.addListener(() {
       String text = amountController.text
           .replaceAll(',', '')
@@ -1299,7 +2171,7 @@ class _CalendarViewState extends State<CalendarView> {
       if (text.isEmpty) return;
       double? value = double.tryParse(text);
       if (value != null) {
-        String newText = "${nf.format(value)}원"; // 💡 nf 사용
+        String newText = "${nf.format(value)}원";
         if (newText != amountController.text) {
           amountController.value = TextEditingValue(
             text: newText,
@@ -1317,15 +2189,13 @@ class _CalendarViewState extends State<CalendarView> {
           .snapshots();
     }
 
-    // _showAddRecordSheet 내부에서 정의된 부분을 이렇게 수정하세요.
     void showPaymentPicker(StateSetter setModalState) {
-      // 💡 setModalState 인자 추가
       showModalBottomSheet(
         context: context,
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.background(context),
         isScrollControlled: true,
         shape: const RoundedRectangleBorder(
-          borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
         ),
         builder: (context) {
           return Container(
@@ -1354,7 +2224,7 @@ class _CalendarViewState extends State<CalendarView> {
                       ),
                       GestureDetector(
                         onTap: () => Navigator.pop(context),
-                        child: const Icon(Icons.close), // 순수 아이콘만 사용
+                        child: const Icon(Icons.close),
                       ),
                     ],
                   ),
@@ -1371,18 +2241,18 @@ class _CalendarViewState extends State<CalendarView> {
                         "현금",
                         style: TextStyle(
                           color: AppColors.secondary,
-                          fontSize: 14,
+                          fontSize: 12,
                         ),
                       ),
                       const Divider(thickness: 0.5),
                       buildPaymentItem("현금", "현금", setModalState),
-                      const SizedBox(height: 20),
+                      const SizedBox(height: 15),
 
                       const Text(
                         "카드",
                         style: TextStyle(
                           color: AppColors.secondary,
-                          fontSize: 14,
+                          fontSize: 12,
                         ),
                       ),
                       const Divider(thickness: 0.5),
@@ -1401,14 +2271,19 @@ class _CalendarViewState extends State<CalendarView> {
                             children: cards.map((doc) {
                               final cardData =
                                   doc.data() as Map<String, dynamic>;
-                              // 💡 카드 관리 페이지에서 저장했던 실제 은행명(예: 카카오뱅크)을 가져옵니다.
                               String actualBankName =
                                   cardData['bankName'] ?? '미지정';
                               String cardName = cardData['cardName'] ?? '';
+                              String cardNumber = (cardData['cardNumber'] ?? '')
+                                  .toString()
+                                  .trim();
+                              String displayName = cardNumber.isNotEmpty
+                                  ? '$cardName($cardNumber)'
+                                  : cardName;
 
                               return buildPaymentItem(
-                                cardName,
-                                actualBankName, // 💡 이 값을 반드시 넘겨줘야 합니다.
+                                displayName,
+                                actualBankName,
                                 setModalState,
                               );
                             }).toList(),
@@ -1428,184 +2303,242 @@ class _CalendarViewState extends State<CalendarView> {
     void showSettlementPicker(StateSetter setModalState) {
       showModalBottomSheet(
         context: context,
-        backgroundColor: Colors.white,
+        backgroundColor: AppColors.background(context),
         isScrollControlled: true,
         shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
         ),
         builder: (context) => StatefulBuilder(
           builder: (context, setPickerState) {
-            // 친구 목록 더미 데이터
-            List<String> friendsList = [
-              "김철수",
-              "이영희",
-              "박지민",
-              "최유나",
-              "정재현",
-              "강민경",
-            ];
+            List<String> friendsList = List<String>.from(selectedFriends);
+            final TextEditingController friendInputController =
+                TextEditingController();
 
             return Padding(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      const Text(
-                        "정산하기",
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+              padding: EdgeInsets.only(
+                left: 24,
+                right: 24,
+                top: 24,
+                bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+              ),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          "정산하기",
+                          style: TextStyle(
+                            fontSize: 18,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        GestureDetector(
+                          onTap: () => Navigator.pop(context),
+                          child: const Icon(Icons.close),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      "정산 인원",
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.secondary,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<int>(
+                      menuMaxHeight: 200,
+                      dropdownColor: AppColors.background(context),
+                      borderRadius: BorderRadius.circular(10),
+                      isExpanded: true,
+
+                      value: settlementPeople,
+                      decoration: InputDecoration(
+                        filled: true,
+                        fillColor: AppColors.divider(context),
+                        border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(10),
+                          borderSide: BorderSide.none,
                         ),
                       ),
-                      GestureDetector(
-                        onTap: () => Navigator.pop(context),
-                        child: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 25),
-                  const Text(
-                    "정산 인원",
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.secondary,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  DropdownButtonFormField<int>(
-                    value: settlementPeople,
-                    decoration: InputDecoration(
-                      filled: true,
-                      fillColor: AppColors.fieldColor,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                        borderSide: BorderSide.none,
-                      ),
-                    ),
-                    items: List.generate(9, (index) => index + 2)
-                        .map(
-                          (val) => DropdownMenuItem(
-                            value: val,
-                            child: Text("$val명"),
-                          ),
-                        )
-                        .toList(),
-
-                    onChanged: (val) {
-                      if (val != null) {
-                        setModalState(() {
-                          settlementPeople = val; // 인원수 변경 (예: 5명)
-
-                          if (originalAmount > 0) {
-                            // 철저하게 보존된 originalAmount(50,000)에서 정직originalAmount하게 나눕니다.
-                            int divided = (originalAmount / settlementPeople)
-                                .round();
-                            amountController.text = "${nf.format(divided)}원";
-                          }
-                        });
-                      }
-                    },
-                  ),
-                  const SizedBox(height: 25),
-                  const Text(
-                    "친구 선택",
-                    style: TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.bold,
-                      color: AppColors.secondary,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    height: 200,
-                    decoration: BoxDecoration(
-                      color: AppColors.fieldColor,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: ListView.builder(
-                      itemCount: friendsList.length,
-                      itemBuilder: (context, index) {
-                        final friend = friendsList[index];
-                        final isSelected = selectedFriends.contains(friend);
-                        return CheckboxListTile(
-                          title: Text(
-                            friend,
-                            style: const TextStyle(fontSize: 15),
-                          ),
-                          value: isSelected,
-                          activeColor: AppColors.primary,
-                          onChanged: (bool? value) {
-                            setPickerState(() {
-                              if (value == true) {
-                                selectedFriends.add(friend);
-                              } else {
-                                selectedFriends.remove(friend);
-                              }
-                            });
-                          },
-                        );
+                      items: List.generate(9, (index) => index + 2)
+                          .map(
+                            (val) => DropdownMenuItem(
+                              value: val,
+                              child: Text("$val명"),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (val) {
+                        if (val != null) {
+                          setModalState(() {
+                            settlementPeople = val;
+                            if (originalAmount > 0) {
+                              int divided = (originalAmount / settlementPeople)
+                                  .round();
+                              amountController.text = "${nf.format(divided)}원";
+                            }
+                          });
+                        }
                       },
                     ),
-                  ),
-                  const SizedBox(height: 30),
-                  SizedBox(
-                    width: double.infinity,
-                    height: 52,
-                    child: ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                        ),
+                    const SizedBox(height: 20),
+                    const Text(
+                      "친구 추가",
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.secondary,
                       ),
-                      onPressed: () {
-                        setModalState(() {
-                          isSettlementActive = true;
+                    ),
+                    const SizedBox(height: 10),
 
-                          // 💡 [버그 완전 해결 핵심 로직]
-                          // 기존의 amountController.text를 그대로 가져와서 계산하면 쪼개진 금액을 또 쪼개게 됩니다.
-                          // 그렇기 때문에 이미 굳건하게 보존되고 있는 원래 전체 금액 'originalAmount'를 기준으로 정직하게 나눕니다.
-                          if (originalAmount > 0) {
-                            int nPrice = (originalAmount / settlementPeople)
-                                .round();
+                    SizedBox(
+                      height: 55,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: AppColors.divider(context),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: SingleChildScrollView(
+                                scrollDirection: Axis.horizontal,
+                                child: Row(
+                                  children: [
+                                    // 태그들
+                                    ...friendsList.map(
+                                      (friend) => Container(
+                                        margin: const EdgeInsets.only(right: 6),
+                                        padding: const EdgeInsets.symmetric(
+                                          horizontal: 10,
+                                          vertical: 5,
+                                        ),
+                                        decoration: BoxDecoration(
+                                          color: AppColors.primary(context)
+                                              .withOpacity(
+                                                0.15,
+                                              ),
+                                          borderRadius: BorderRadius.circular(
+                                            25,
+                                          ),
+                                        ),
+                                        child: Row(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Text(
+                                              friend,
+                                              style: TextStyle(
+                                                fontSize: 15,
+                                                color: AppColors.primary(
+                                                  context,
+                                                ),
+                                              ),
+                                            ),
+                                            const SizedBox(width: 4),
+                                            GestureDetector(
+                                              onTap: () {
+                                                setPickerState(() {
+                                                  friendsList.remove(friend);
+                                                  selectedFriends.remove(
+                                                    friend,
+                                                  );
+                                                });
+                                              },
+                                              child: Icon(
+                                                Icons.close,
+                                                size: 14,
+                                                color: AppColors.primary(
+                                                  context,
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ),
 
-                            // 1인당 정산 금액(예: 10,000원)을 정확하게 부모 텍스트 필드에 주입합니다.
-                            amountController.text = "${nf.format(nPrice)}원";
-                          }
-                        });
-                        Navigator.pop(context);
-                      },
-                      child: const Text(
-                        "설정 완료",
-                        style: TextStyle(
-                          color: Colors.white,
-                          fontWeight: FontWeight.bold,
+                                    // 입력창
+                                    SizedBox(
+                                      width: 100,
+                                      child: TextField(
+                                        controller: friendInputController,
+                                        style: const TextStyle(fontSize: 15),
+                                        decoration: const InputDecoration(
+                                          hintText: "이름 입력",
+                                          hintStyle: TextStyle(
+                                            color: AppColors.secondary,
+                                            fontSize: 15,
+                                          ),
+                                          border: InputBorder.none,
+                                          isDense: true,
+                                          contentPadding: EdgeInsets.zero,
+                                        ),
+                                        onSubmitted: (value) {
+                                          final name = value.trim();
+                                          if (name.isNotEmpty &&
+                                              !friendsList.contains(name)) {
+                                            setPickerState(() {
+                                              friendsList.add(name);
+                                              selectedFriends.add(name);
+                                            });
+                                            friendInputController.clear();
+                                          }
+                                        },
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      setModalState(() {
-                        isSettlementActive = false;
-                        selectedFriends.clear();
-                        settlementPeople = 2;
-                      });
-                      Navigator.pop(context);
-                    },
-                    child: const Center(
-                      child: Text(
-                        "정산 취소",
-                        style: TextStyle(color: AppColors.pointColor),
+                    const SizedBox(height: 20),
+                    SizedBox(
+                      width: double.infinity,
+                      height: 55,
+                      child: ElevatedButton(
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppColors.primary(context),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                        ),
+                        onPressed: () {
+                          setModalState(() {
+                            isSettlementActive = true;
+
+                            if (originalAmount > 0) {
+                              int nPrice = (originalAmount / settlementPeople)
+                                  .round();
+
+                              amountController.text = "${nf.format(nPrice)}원";
+                            }
+                          });
+                          Navigator.pop(context);
+                        },
+                        child: Text(
+                          "저장",
+                          style: TextStyle(
+                            color: AppColors.background(context),
+                            fontWeight: FontWeight.bold,
+                            fontSize: 18,
+                          ),
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             );
           },
@@ -1619,13 +2552,21 @@ class _CalendarViewState extends State<CalendarView> {
       backgroundColor: Colors.transparent,
       builder: (context) => StatefulBuilder(
         builder: (context, setModalState) {
+          _modalStateSetter = setModalState;
+          _onCategoryAutoAssigned = (name, icon) {
+            setModalState(() {
+              selectedCategory = {'name': name, 'icon': icon};
+            });
+          };
           return Container(
             constraints: BoxConstraints(
               maxHeight: MediaQuery.of(context).size.height * 0.9,
             ),
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+            decoration: BoxDecoration(
+              color: AppColors.background(context),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(25),
+              ),
             ),
             padding: EdgeInsets.only(
               bottom: MediaQuery.of(context).viewInsets.bottom + 20,
@@ -1642,11 +2583,11 @@ class _CalendarViewState extends State<CalendarView> {
                     GestureDetector(
                       onTap: () {
                         setState(() {
-                          _receiptImage = null; // 창 닫을 때 영수증 사진 상태도 함께 클리어!
+                          _receiptImage = null;
                         });
                         Navigator.pop(context);
                       },
-                      child: const Icon(Icons.close), // 순수 아이콘만 사용
+                      child: const Icon(Icons.close),
                     ),
                   ],
                 ),
@@ -1656,7 +2597,6 @@ class _CalendarViewState extends State<CalendarView> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // 📸 [요구사항] 영수증 이미지 표시 및 우측 상단 기능 버튼들 (X, 편집)
                         if (_receiptImage != null) ...[
                           Stack(
                             children: [
@@ -1665,32 +2605,32 @@ class _CalendarViewState extends State<CalendarView> {
                                 height: 180,
                                 margin: const EdgeInsets.only(bottom: 16),
                                 decoration: BoxDecoration(
-                                  borderRadius: BorderRadius.circular(12),
+                                  borderRadius: BorderRadius.circular(10),
                                   border: Border.all(
-                                    color: Colors.grey.shade300,
+                                    color: AppColors.secondary,
                                   ),
                                   image: isOcrLoading
-                                      ? null // 로딩 중일 때는 이미지를 임시 숨김 처리
+                                      ? null
                                       : DecorationImage(
                                           image: FileImage(_receiptImage!),
                                           fit: BoxFit.cover,
                                         ),
-                                ), // 💡 이미지 분석 중일 때 제자리에서 도는 이쁜 로딩 인디케이터 표시
+                                ),
                                 child: isOcrLoading
-                                    ? const Center(
+                                    ? Center(
                                         child: Column(
                                           mainAxisAlignment:
                                               MainAxisAlignment.center,
                                           children: [
                                             CircularProgressIndicator(
-                                              color: AppColors.pointColor,
+                                              color: AppColors.primary(context),
                                             ),
-                                            SizedBox(height: 10),
-                                            Text(
+                                            const SizedBox(height: 10),
+                                            const Text(
                                               "영수증 재분석 중...",
                                               style: TextStyle(
-                                                color: Colors.grey,
-                                                fontSize: 13,
+                                                color: AppColors.secondary,
+                                                fontSize: 15,
                                               ),
                                             ),
                                           ],
@@ -1698,14 +2638,84 @@ class _CalendarViewState extends State<CalendarView> {
                                       )
                                     : null,
                               ),
-                              // 로딩 중이 아닐 때만 우측 상단 기능 버튼들 노출
                               if (!isOcrLoading)
                                 Positioned(
                                   top: 8,
                                   right: 8,
                                   child: Row(
                                     children: [
-                                      // ✏️ 제자리 이미지&텍스트 변환 편집 버튼
+                                      // 카메라로 변경
+                                      GestureDetector(
+                                        onTap: () async {
+                                          final ImagePicker picker =
+                                              ImagePicker();
+                                          final XFile? image = await picker
+                                              .pickImage(
+                                                source: ImageSource.camera,
+                                              );
+                                          if (image != null) {
+                                            setModalState(
+                                              () => isOcrLoading = true,
+                                            );
+                                            setState(
+                                              () => _receiptImage = File(
+                                                image.path,
+                                              ),
+                                            );
+                                            final newData =
+                                                await _analyzeReceipt(
+                                                  image.path,
+                                                );
+                                            if (newData != null) {
+                                              setModalState(() {
+                                                placeController.text =
+                                                    newData['place'] ?? '';
+                                                amountController.text =
+                                                    formatter.format(
+                                                      newData['amount'] ?? 0,
+                                                    );
+                                                memoController.text =
+                                                    newData['memo'] ?? '';
+                                                if (newData['date'] != null) {
+                                                  tempDate =
+                                                      (newData['date']
+                                                              as Timestamp)
+                                                          .toDate();
+                                                }
+                                                if (newData['category'] !=
+                                                    null) {
+                                                  category =
+                                                      newData['category']['name'] ??
+                                                      '식비';
+                                                }
+                                              });
+                                            }
+                                            setModalState(
+                                              () => isOcrLoading = false,
+                                            );
+                                          }
+                                        },
+                                        child: Container(
+                                          margin: const EdgeInsets.only(
+                                            right: 8,
+                                          ),
+                                          padding: const EdgeInsets.all(6),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.textPrimary(
+                                              context,
+                                            ),
+                                            shape: BoxShape.circle,
+                                          ),
+                                          child: Icon(
+                                            Icons.camera_alt,
+                                            color: AppColors.background(
+                                              context,
+                                            ),
+                                            size: 16,
+                                          ),
+                                        ),
+                                      ),
+                                      // 갤러리로 변경
                                       GestureDetector(
                                         onTap: () async {
                                           final ImagePicker picker =
@@ -1716,24 +2726,20 @@ class _CalendarViewState extends State<CalendarView> {
                                               );
 
                                           if (image != null) {
-                                            // 1. 클래스 상태 변수 및 바텀시트 새로고침을 통해 즉시 로딩 인디케이터 구동
                                             setModalState(() {
                                               isOcrLoading = true;
                                             });
 
-                                            // 2. 메인 파일 상태 동기화
                                             setState(() {
                                               _receiptImage = File(image.path);
                                             });
 
-                                            // 3. 백그라운드 재인식 프로세스 가동 (창이 유지됨)
                                             final newData =
                                                 await _analyzeReceipt(
                                                   image.path,
                                                 );
 
                                             if (newData != null) {
-                                              // 4. 추출 완료 즉시 기존 텍스트 필드 값들만 실시간으로 갈아끼우기
                                               setModalState(() {
                                                 placeController.text =
                                                     newData['place'] ?? '';
@@ -1759,7 +2765,6 @@ class _CalendarViewState extends State<CalendarView> {
                                               });
                                             }
 
-                                            // 5. 로딩 변수 해제 후 이미지 원상복구
                                             setModalState(() {
                                               isOcrLoading = false;
                                             });
@@ -1770,19 +2775,22 @@ class _CalendarViewState extends State<CalendarView> {
                                             right: 8,
                                           ),
                                           padding: const EdgeInsets.all(6),
-                                          decoration: const BoxDecoration(
-                                            color: Colors.black54,
+                                          decoration: BoxDecoration(
+                                            color: AppColors.textPrimary(
+                                              context,
+                                            ),
                                             shape: BoxShape.circle,
                                           ),
-                                          child: const Icon(
-                                            Icons.edit,
-                                            color: Colors.white,
+                                          child: Icon(
+                                            Icons.photo_library,
+                                            color: AppColors.background(
+                                              context,
+                                            ),
                                             size: 16,
                                           ),
                                         ),
                                       ),
 
-                                      // ❌ 기존 이미지 삭제 버튼
                                       GestureDetector(
                                         onTap: () {
                                           setState(() {
@@ -1792,17 +2800,25 @@ class _CalendarViewState extends State<CalendarView> {
                                             placeController.clear();
                                             amountController.clear();
                                             memoController.clear();
+                                            selectedCategory = {
+                                              'name': '미분류',
+                                              'icon': '？',
+                                            };
                                           });
                                         },
                                         child: Container(
                                           padding: const EdgeInsets.all(6),
-                                          decoration: const BoxDecoration(
-                                            color: Colors.black54,
+                                          decoration: BoxDecoration(
+                                            color: AppColors.textPrimary(
+                                              context,
+                                            ),
                                             shape: BoxShape.circle,
                                           ),
-                                          child: const Icon(
+                                          child: Icon(
                                             Icons.close,
-                                            color: Colors.white,
+                                            color: AppColors.background(
+                                              context,
+                                            ),
                                             size: 16,
                                           ),
                                         ),
@@ -1816,11 +2832,13 @@ class _CalendarViewState extends State<CalendarView> {
                         Row(
                           crossAxisAlignment: CrossAxisAlignment.center,
                           children: [
-                            // 1. 실제 저장될 금액 입력 칸 (정산 시 1인당 금액이 됨)
                             Expanded(
                               child: TextField(
                                 controller: amountController,
                                 keyboardType: TextInputType.number,
+                                textInputAction: TextInputAction.done,
+                                onSubmitted: (_) =>
+                                    FocusScope.of(context).unfocus(),
                                 style: const TextStyle(
                                   fontSize: 24,
                                   fontWeight: FontWeight.bold,
@@ -1828,12 +2846,11 @@ class _CalendarViewState extends State<CalendarView> {
                                 decoration: InputDecoration(
                                   hintText: "0원",
                                   border: InputBorder.none,
-                                  // 💡 정산하기가 켜져 있으면 텍스트 필드 밑에 안내 문구 표시
                                   helperText: isSettlementActive
                                       ? "1인당 정산 금액"
                                       : null,
-                                  helperStyle: const TextStyle(
-                                    color: AppColors.primary,
+                                  helperStyle: TextStyle(
+                                    color: AppColors.primary(context),
                                     fontSize: 12,
                                   ),
                                 ),
@@ -1847,7 +2864,6 @@ class _CalendarViewState extends State<CalendarView> {
                                     return;
                                   }
 
-                                  // 사용자가 입력한 값에서 콤마와 '원'을 지우고 순수 숫자로 파싱
                                   int? parsed = int.tryParse(
                                     val
                                         .replaceAll(',', '')
@@ -1856,10 +2872,8 @@ class _CalendarViewState extends State<CalendarView> {
                                   );
 
                                   if (parsed != null) {
-                                    // 💡 사용자가 키보드로 치는 값은 무조건 원래 전체 금액(originalAmount)으로 고정!
                                     originalAmount = parsed;
 
-                                    // 화면에는 정산 인원수에 맞게 나눠서 보여줌
                                     int displayAmount = isSettlementActive
                                         ? (originalAmount / settlementPeople)
                                               .round()
@@ -1879,11 +2893,9 @@ class _CalendarViewState extends State<CalendarView> {
                               ),
                             ),
 
-                            // 💡 [핵심 추가] 정산 중일 때 나누기 전 원래 전체 금액을 옆에 띄워주는 레이아웃
                             if (isSettlementActive) ...[
                               Builder(
                                 builder: (context) {
-                                  // 원래 전체 총액 계산
                                   int totalAmount = isSettlementActive
                                       ? originalAmount
                                       : (int.tryParse(
@@ -1895,9 +2907,7 @@ class _CalendarViewState extends State<CalendarView> {
                                             0);
 
                                   return GestureDetector(
-                                    // ✨ 전체 금액 박스를 클릭했을 때 실행할 액션
                                     onTap: () {
-                                      // 전체 금액을 새로 입력받을 임시 컨트롤러 (기존 금액을 초기값으로 세팅)
                                       final TextEditingController
                                       totalEditController =
                                           TextEditingController(
@@ -1908,6 +2918,8 @@ class _CalendarViewState extends State<CalendarView> {
                                         context: context,
                                         builder: (dialogContext) {
                                           return AlertDialog(
+                                            backgroundColor:
+                                                AppColors.background(context),
                                             title: const Text(
                                               "전체 금액",
                                               style: TextStyle(
@@ -1915,6 +2927,7 @@ class _CalendarViewState extends State<CalendarView> {
                                                 fontWeight: FontWeight.bold,
                                               ),
                                             ),
+
                                             content: TextField(
                                               controller: totalEditController,
                                               keyboardType:
@@ -1923,11 +2936,27 @@ class _CalendarViewState extends State<CalendarView> {
                                                 FilteringTextInputFormatter
                                                     .digitsOnly,
                                               ],
-                                              autofocus:
-                                                  true, // 팝업 열리자마자 키보드 활성화
-                                              decoration: const InputDecoration(
+                                              autofocus: true,
+                                              decoration: InputDecoration(
                                                 suffixText: "원",
-                                                hintText: "새로운 전체 금액 입력",
+                                                hintText: "전체 금액 입력",
+                                                hintStyle: const TextStyle(
+                                                  color: AppColors.secondary,
+                                                ),
+                                                filled: true,
+                                                fillColor: AppColors.divider(
+                                                  context,
+                                                ),
+                                                border: OutlineInputBorder(
+                                                  borderRadius:
+                                                      BorderRadius.circular(10),
+                                                  borderSide: BorderSide.none,
+                                                ),
+                                                contentPadding:
+                                                    const EdgeInsets.symmetric(
+                                                      horizontal: 14,
+                                                      vertical: 12,
+                                                    ),
                                               ),
                                             ),
                                             actions: [
@@ -1939,12 +2968,13 @@ class _CalendarViewState extends State<CalendarView> {
                                                   "취소",
                                                   style: TextStyle(
                                                     color: AppColors.secondary,
+                                                    fontWeight: FontWeight.bold,
+                                                    fontSize: 14,
                                                   ),
                                                 ),
                                               ),
                                               TextButton(
                                                 onPressed: () {
-                                                  // 입력된 문자열에서 숫자만 파싱
                                                   int? newTotal = int.tryParse(
                                                     totalEditController.text
                                                         .replaceAll(',', '')
@@ -1952,31 +2982,30 @@ class _CalendarViewState extends State<CalendarView> {
                                                   );
                                                   if (newTotal != null &&
                                                       newTotal > 0) {
-                                                    // 1️⃣ 바텀시트의 상태를 변경합니다.
                                                     setModalState(() {
-                                                      // 전체 원본 금액을 새로 입력한 값으로 변경!
                                                       originalAmount = newTotal;
 
-                                                      // 2️⃣ 바뀐 전체 금액 기준으로 1인당 정산 금액 재계산
                                                       int nPrice =
                                                           (originalAmount /
                                                                   settlementPeople)
                                                               .round();
 
-                                                      // 3️⃣ 왼쪽 금액 필드란 텍스트 갱신
                                                       amountController.text =
                                                           "${formatter.format(nPrice)}원";
                                                     });
                                                   }
                                                   Navigator.pop(
                                                     dialogContext,
-                                                  ); // 팝업 닫기
+                                                  );
                                                 },
-                                                child: const Text(
+                                                child: Text(
                                                   "확인",
                                                   style: TextStyle(
-                                                    color: AppColors.primary,
+                                                    color: AppColors.primary(
+                                                      context,
+                                                    ),
                                                     fontWeight: FontWeight.bold,
+                                                    fontSize: 14,
                                                   ),
                                                 ),
                                               ),
@@ -1986,22 +3015,22 @@ class _CalendarViewState extends State<CalendarView> {
                                       );
                                     },
                                     child: MouseRegion(
-                                      cursor: SystemMouseCursors
-                                          .click, // 마우스 커서 변경 효과
+                                      cursor: SystemMouseCursors.click,
                                       child: Container(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 10,
                                           vertical: 5,
                                         ),
                                         decoration: BoxDecoration(
-                                          color: AppColors.primary.withOpacity(
-                                            0.1,
-                                          ), // 클릭 가능한 느낌을 주도록 옅은 포인트 컬러 부여
+                                          color: AppColors.primary(context)
+                                              .withOpacity(
+                                                0.1,
+                                              ),
                                           borderRadius: BorderRadius.circular(
-                                            8,
+                                            10,
                                           ),
                                           border: Border.all(
-                                            color: AppColors.primary
+                                            color: AppColors.primary(context)
                                                 .withOpacity(
                                                   0.2,
                                                 ),
@@ -2013,18 +3042,19 @@ class _CalendarViewState extends State<CalendarView> {
                                           children: [
                                             Text(
                                               "전체 ${formatter.format(totalAmount)}원",
-                                              style: const TextStyle(
+                                              style: TextStyle(
                                                 fontSize: 14,
-                                                color: AppColors
-                                                    .primary, // 텍스트 컬러도 포인트 컬러로 변경해 강조
+                                                color: AppColors.primary(
+                                                  context,
+                                                ),
                                               ),
                                             ),
-                                            const SizedBox(width: 4),
-                                            const Icon(
+                                            const SizedBox(width: 5),
+                                            Icon(
                                               Icons.edit,
                                               size: 14,
-                                              color: AppColors.primary,
-                                            ), // 수정 가능하다는 아이콘 표시
+                                              color: AppColors.primary(context),
+                                            ),
                                           ],
                                         ),
                                       ),
@@ -2036,7 +3066,7 @@ class _CalendarViewState extends State<CalendarView> {
                           ],
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "분류",
@@ -2047,10 +3077,9 @@ class _CalendarViewState extends State<CalendarView> {
                                 selectedType == '지출',
                                 () => setModalState(() {
                                   selectedType = '지출';
-                                  // 타입을 바꿀 때 카테고리를 기본값으로 초기화하고 싶다면:
                                   selectedCategory = {
                                     'name': '미분류',
-                                    'icon': '❓',
+                                    'icon': '？',
                                   };
                                 }),
                               ),
@@ -2060,23 +3089,33 @@ class _CalendarViewState extends State<CalendarView> {
                                 selectedType == '수입',
                                 () => setModalState(() {
                                   selectedType = '수입';
-                                  // 타입을 바꿀 때 카테고리를 기본값으로 초기화하고 싶다면:
                                   selectedCategory = {
                                     'name': '미분류',
-                                    'icon': '❓',
+                                    'icon': '？',
                                   };
                                 }),
                               ),
                               const SizedBox(width: 10),
                               _buildTypeButton(
-                                "이체",
-                                selectedType == '이체',
+                                "이체\n(지출)",
+                                selectedType == '이체(지출)',
                                 () => setModalState(() {
-                                  selectedType = '이체';
-                                  // 타입을 바꿀 때 카테고리를 기본값으로 초기화하고 싶다면:
+                                  selectedType = '이체(지출)';
                                   selectedCategory = {
                                     'name': '미분류',
-                                    'icon': '❓',
+                                    'icon': '？',
+                                  };
+                                }),
+                              ),
+                              const SizedBox(width: 10),
+                              _buildTypeButton(
+                                "이체\n(수입)",
+                                selectedType == '이체(수입)',
+                                () => setModalState(() {
+                                  selectedType = '이체(수입)';
+                                  selectedCategory = {
+                                    'name': '미분류',
+                                    'icon': '？',
                                   };
                                 }),
                               ),
@@ -2084,7 +3123,7 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "사용처",
@@ -2094,16 +3133,19 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "카테고리",
                           _buildSelectableBox(
                             "${selectedCategory['icon']} ${selectedCategory['name']}",
                             () async {
-                              // 💡 현재 선택된 타입(selectedType)을 넘겨줍니다.
+                              FocusScope.of(context).unfocus();
                               final result = await _showCategoryPicker(
-                                selectedType == '이체' ? '지출' : selectedType,
+                                (selectedType == '이체(지출)' ||
+                                        selectedType == '이체(수입)')
+                                    ? '지출'
+                                    : selectedType,
                               );
                               if (result != null) {
                                 setModalState(() => selectedCategory = result);
@@ -2112,18 +3154,20 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
-                        // 580라인 부근의 _buildInputRow 부분을 이렇게 수정하세요.
                         _buildInputRow(
                           "결제수단",
                           GestureDetector(
-                            onTap: () => showPaymentPicker(setModalState),
+                            onTap: () {
+                              FocusScope.of(context).unfocus();
+                              showPaymentPicker(setModalState);
+                            },
                             child: Container(
                               height: fieldHeight,
                               decoration: BoxDecoration(
-                                color: Colors.white, // 배경색 유지
-                                borderRadius: BorderRadius.circular(12),
+                                color: AppColors.background(context),
+                                borderRadius: BorderRadius.circular(10),
                               ),
                               child: Row(
                                 mainAxisAlignment:
@@ -2139,7 +3183,7 @@ class _CalendarViewState extends State<CalendarView> {
                                         style: TextStyle(
                                           color: selectedPayment.isEmpty
                                               ? AppColors.secondary
-                                              : Colors.black,
+                                              : AppColors.textPrimary(context),
                                           fontSize: 15,
                                         ),
                                         overflow: TextOverflow.ellipsis,
@@ -2158,7 +3202,7 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "정산하기",
@@ -2170,52 +3214,80 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "날짜",
                           _buildSelectableBox(
-                            // 1. 표시 형식: yyyy. MM. dd HH:mm (예: 2023. 10. 25 14:30)
-                            DateFormat('yyyy. MM. dd HH:mm').format(tempDate),
+                            DateFormat(
+                              'yyyy. MM. dd',
+                            ).format(tempDate), // ✅ 시간 제거
                             () async {
-                              // 2. 먼저 날짜를 선택합니다.
-                              final DateTime? pickedDate = await showDatePicker(
+                              // ✅ showDatePicker 대신 iOS 스타일 CupertinoDatePicker 사용
+                              await showModalBottomSheet(
                                 context: context,
-                                initialDate: tempDate,
-                                firstDate: DateTime(2020),
-                                lastDate: DateTime(2030),
-                                locale: const Locale('ko', 'KR'),
+                                backgroundColor: AppColors.background(context),
+                                builder: (context) {
+                                  return SizedBox(
+                                    height: 300,
+                                    child: Column(
+                                      children: [
+                                        Row(
+                                          mainAxisAlignment:
+                                              MainAxisAlignment.end,
+                                          children: [
+                                            TextButton(
+                                              onPressed: () =>
+                                                  Navigator.pop(context),
+                                              child: Padding(
+                                                padding: const EdgeInsets.only(
+                                                  right: 10,
+                                                  top: 10,
+                                                ),
+                                                child: Text(
+                                                  "완료",
+                                                  style: TextStyle(
+                                                    fontSize: 15,
+                                                    color: AppColors.primary(
+                                                      context,
+                                                    ),
+                                                  ),
+                                                ),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                        Expanded(
+                                          child: CupertinoDatePicker(
+                                            backgroundColor:
+                                                AppColors.background(context),
+                                            mode: CupertinoDatePickerMode
+                                                .date, // ✅ 날짜만
+                                            initialDateTime: tempDate,
+                                            minimumDate: DateTime(2020),
+                                            maximumDate: DateTime(2030),
+                                            onDateTimeChanged:
+                                                (DateTime newDate) {
+                                                  setModalState(() {
+                                                    tempDate = DateTime(
+                                                      newDate.year,
+                                                      newDate.month,
+                                                      newDate.day,
+                                                    );
+                                                  });
+                                                },
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+                                },
                               );
-
-                              if (pickedDate != null) {
-                                // 3. 날짜 선택이 완료되면 바로 시간을 선택하는 창을 띄웁니다.
-                                final TimeOfDay? pickedTime =
-                                    await showTimePicker(
-                                      context: context,
-                                      initialTime: TimeOfDay.fromDateTime(
-                                        tempDate,
-                                      ),
-                                      // 한국어 설정이 되어 있다면 오전/오후로 표시됩니다.
-                                    );
-
-                                if (pickedTime != null) {
-                                  // 4. 선택된 날짜와 시간을 합쳐서 tempDate를 업데이트합니다.
-                                  setModalState(() {
-                                    tempDate = DateTime(
-                                      pickedDate.year,
-                                      pickedDate.month,
-                                      pickedDate.day,
-                                      pickedTime.hour,
-                                      pickedTime.minute,
-                                    );
-                                  });
-                                }
-                              }
                             },
                           ),
                         ),
                         const SizedBox(height: 15),
-                        const Divider(height: 1, color: AppColors.dividerColor),
+                        Divider(height: 1, color: AppColors.divider(context)),
                         const SizedBox(height: 15),
                         _buildInputRow(
                           "메모",
@@ -2227,7 +3299,7 @@ class _CalendarViewState extends State<CalendarView> {
                         const SizedBox(height: 30),
                         Row(
                           children: [
-                            if (docId != null) // 1. 수정 시에만 노출되는 [삭제] 버튼
+                            if (docId != null)
                               Expanded(
                                 child: Container(
                                   margin: const EdgeInsets.only(right: 10),
@@ -2235,7 +3307,7 @@ class _CalendarViewState extends State<CalendarView> {
                                   child: OutlinedButton(
                                     onPressed: () => _saveRecord(
                                       docId: docId,
-                                      isDelete: true, // ✅ 삭제 버튼이므로 true가 맞습니다!
+                                      isDelete: true,
                                       type: '',
                                       amount: '',
                                       place: '',
@@ -2246,10 +3318,12 @@ class _CalendarViewState extends State<CalendarView> {
                                       memo: '',
                                     ),
                                     style: OutlinedButton.styleFrom(
-                                      side: const BorderSide(
-                                        color: AppColors.fieldColor,
+                                      side: BorderSide(
+                                        color: AppColors.divider(context),
                                       ),
-                                      backgroundColor: AppColors.fieldColor,
+                                      backgroundColor: AppColors.divider(
+                                        context,
+                                      ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(10),
                                       ),
@@ -2259,14 +3333,13 @@ class _CalendarViewState extends State<CalendarView> {
                                       style: TextStyle(
                                         color: AppColors.secondary,
                                         fontWeight: FontWeight.bold,
-                                        fontSize: 16,
+                                        fontSize: 18,
                                       ),
                                     ),
                                   ),
                                 ),
                               ),
                             Expanded(
-                              // 2. 진짜 [저장 / 수정] 버튼
                               child: SizedBox(
                                 height: 55,
                                 child: ElevatedButton(
@@ -2276,17 +3349,17 @@ class _CalendarViewState extends State<CalendarView> {
                                     amount: amountController.text,
                                     place: placeController.text,
                                     category: selectedCategory,
-                                    payment: selectedPayment, // 카드 이름 전달
-                                    bankName: selectedBankName, // 💡 은행 이름 전달
+                                    payment: selectedPayment,
+                                    bankName: selectedBankName,
                                     date: tempDate,
                                     memo: memoController.text,
-                                    isDelete: false, // ✅ 저장 버튼이므로 false가 맞습니다!
+                                    isDelete: false,
                                     isSettlement: isSettlementActive,
                                     sPeople: settlementPeople,
                                     sFriends: selectedFriends,
                                   ),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppColors.primary,
+                                    backgroundColor: AppColors.primary(context),
                                     shape: RoundedRectangleBorder(
                                       borderRadius: BorderRadius.circular(10),
                                     ),
@@ -2294,10 +3367,10 @@ class _CalendarViewState extends State<CalendarView> {
                                   ),
                                   child: Text(
                                     docId == null ? "저장" : "수정",
-                                    style: const TextStyle(
-                                      color: Colors.white,
+                                    style: TextStyle(
+                                      color: AppColors.background(context),
                                       fontWeight: FontWeight.bold,
-                                      fontSize: 16,
+                                      fontSize: 18,
                                     ),
                                   ),
                                 ),
@@ -2305,7 +3378,7 @@ class _CalendarViewState extends State<CalendarView> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 20),
                       ],
                     ),
                   ),
@@ -2315,7 +3388,12 @@ class _CalendarViewState extends State<CalendarView> {
           );
         },
       ),
-    );
+    ).whenComplete(() {
+      placeController.removeListener(autoAssign);
+      placeController.addListener(_autoAssignCategory);
+      _modalStateSetter = null;
+      _onCategoryAutoAssigned = null;
+    });
   }
 
   void _showDetailListSheet() {
@@ -2324,9 +3402,8 @@ class _CalendarViewState extends State<CalendarView> {
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) => StreamBuilder<QuerySnapshot>(
-        stream: _getRecordsStream(), // 부모와 동일한 스트림 구독
+        stream: _getRecordsStream(),
         builder: (context, snapshot) {
-          // 1. 실시간으로 현재 선택된 날짜의 데이터를 다시 계산합니다.
           List<Map<String, dynamic>> currentRecords = [];
           int income = 0;
           int expense = 0;
@@ -2337,20 +3414,17 @@ class _CalendarViewState extends State<CalendarView> {
               data['docId'] = doc.id;
               DateTime date = (data['date'] as Timestamp).toDate();
 
-              // 🔥 현재 선택된 날짜와 같은 데이터만 실시간으로 모음
               if (isSameDay(date, _selectedDay)) {
                 currentRecords.add(data);
                 if (data['type'] == '수입') {
                   income += (data['amount'] as int);
-                } else if (data['type'] == '지출' || data['type'] == '이체') {
-                  // ✅ 이체도 상세창 지출 합산에 포함
+                } else if (data['type'] == '지출' || data['type'] == '이체(지출)') {
                   expense += (data['amount'] as int);
                 }
               }
             }
           }
 
-          // 2. 💡 고정지출 내역 가져오기 (이 날짜에 해당하는 항목들만)
           List<Map<String, dynamic>> fixedRecordList = [];
           int dailyFixedTotal = 0;
 
@@ -2360,35 +3434,149 @@ class _CalendarViewState extends State<CalendarView> {
               _selectedDay!.month,
               _selectedDay!.day,
             );
-            int fixedTotal = _events[normalizedDate] ?? 0;
 
-            // 💡 고정지출을 리스트에 추가하는 부분
-            if (fixedTotal > 0) {
+            List<Map<String, dynamic>> fixedItems =
+                _events[normalizedDate] ?? [];
+
+            for (var item in fixedItems) {
+              int itemAmount = item['amount'] as int;
+              String itemName = item['name'] as String;
+              String expenseType = item['expenseType'] ?? '고정지출';
+              String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+
               Map<String, dynamic> fixedData = {
-                'docId': 'fixed_${normalizedDate.millisecondsSinceEpoch}',
-                'place': '고정지출',
-                'amount': fixedTotal,
-                'category': {'name': '고정지출', 'icon': '🗓️'},
+                'docId':
+                    'fixed_${normalizedDate.millisecondsSinceEpoch}_$itemName',
+                'place': itemName,
+                'amount': itemAmount,
+                'category': {'name': expenseType, 'icon': icon},
                 'type': '지출',
-                'isFixed': true, // 💡 상세창에서 구분용 플래그
+                'isFixed': true,
               };
               currentRecords.add(fixedData);
-              expense += fixedTotal;
+              expense += itemAmount;
             }
           }
 
-          // 만약 모든 내역이 삭제되어 비었다면 자동으로 팝업을 닫습니다.
           if (snapshot.hasData && currentRecords.isEmpty) {
-            WidgetsBinding.instance.addPostFrameCallback((_) {
-              if (Navigator.canPop(context)) Navigator.pop(context);
-            });
-            return const SizedBox.shrink();
-          }
+            return Container(
+              decoration: BoxDecoration(
+                color: AppColors.background(context),
+                borderRadius: const BorderRadius.vertical(
+                  top: Radius.circular(25),
+                ),
+              ),
+              padding: const EdgeInsets.only(
+                top: 24,
+                bottom: 40,
+                left: 24,
+                right: 24,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // ✅ 기존과 동일한 헤더
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        DateFormat('M월 d일').format(_selectedDay!),
+                        style: const TextStyle(
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      GestureDetector(
+                        onTap: () => Navigator.pop(context),
+                        child: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  Row(
+                    children: [
+                      const Text(
+                        "총 0건",
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: AppColors.secondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 24),
 
+                  Center(
+                    child: GestureDetector(
+                      onTap: () {
+                        Navigator.pop(context);
+                        setState(() => _isMenuOpen = true);
+                      },
+
+                      child: Row(
+                        mainAxisSize: MainAxisSize.max,
+                        children: [
+                          Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: AppColors.divider(context),
+                              shape: BoxShape.circle,
+                            ),
+                            alignment: Alignment.center,
+                            child: const Icon(
+                              Icons.add,
+                              size: 24,
+                              color: AppColors.secondary,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Text(
+                            "내역 추가",
+                            style: TextStyle(
+                              color: AppColors.textPrimary(context),
+                              fontSize: 15,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 30),
+
+                  SizedBox(
+                    width: double.infinity,
+                    height: 55,
+                    child: ElevatedButton(
+                      onPressed: () => Navigator.pop(context),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: AppColors.primary(context),
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        foregroundColor: AppColors.background(context),
+                        elevation: 0,
+                      ),
+                      child: const Text(
+                        "확인",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 18,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          }
           return Container(
-            decoration: const BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+            decoration: BoxDecoration(
+              color: AppColors.background(context),
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(25),
+              ),
             ),
             padding: const EdgeInsets.only(
               top: 24,
@@ -2403,7 +3591,6 @@ class _CalendarViewState extends State<CalendarView> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    // 1. 상단 날짜 표시
                     Text(
                       DateFormat('M월 d일').format(_selectedDay!),
                       style: const TextStyle(
@@ -2413,14 +3600,13 @@ class _CalendarViewState extends State<CalendarView> {
                     ),
                     GestureDetector(
                       onTap: () => Navigator.pop(context),
-                      child: const Icon(Icons.close), // 순수 아이콘만 사용
+                      child: const Icon(Icons.close),
                     ),
                   ],
                 ),
-                const SizedBox(height: 20), // 날짜와 통계 사이 간격
+                const SizedBox(height: 20),
                 Row(
                   children: [
-                    // 왼쪽 끝에 고정
                     Text(
                       "총 ${currentRecords.length}건",
                       style: const TextStyle(
@@ -2434,9 +3620,9 @@ class _CalendarViewState extends State<CalendarView> {
                     if (income > 0)
                       Text(
                         "+${NumberFormat('#,###').format(income)}원",
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 14,
-                          color: AppColors.primary,
+                          color: AppColors.primary(context),
                         ),
                       ),
 
@@ -2445,21 +3631,22 @@ class _CalendarViewState extends State<CalendarView> {
                     if (expense > 0)
                       Text(
                         "-${NumberFormat('#,###').format(expense)}원",
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 14,
-                          color: Colors.black,
+                          color: AppColors.textPrimary(context),
                         ),
                       ),
                   ],
                 ),
-                const Divider(
+                Divider(
                   height: 30,
                   thickness: 1,
-                  color: AppColors.dividerColor,
+                  color: AppColors.divider(context),
                 ),
                 Flexible(
                   child: ListView.builder(
                     shrinkWrap: true,
+                    padding: EdgeInsets.zero,
                     itemCount: currentRecords.length,
                     itemBuilder: (context, index) {
                       final item = currentRecords[index];
@@ -2473,97 +3660,131 @@ class _CalendarViewState extends State<CalendarView> {
                           ? item['category']['name']
                           : '미분류';
 
-                      return ListTile(
-                        contentPadding: EdgeInsets.zero,
-                        onTap: () {
-                          if (isFixedItem) {
-                            // 💡 고정지출 클릭 시 동작 (예: 상세 정보 팝업)
-                            ScaffoldMessenger.of(context).showSnackBar(
-                              const SnackBar(content: Text("고정지출 상세 내역입니다.")),
-                            );
-                          } else {
-                            // 일반 지출/수입 상세 수정
-                            _showAddRecordSheet(
-                              initialData: item,
-                              docId: item['docId'],
-                            );
-                          }
-                        },
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: AppColors.fieldColor,
-                            shape: BoxShape.circle,
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            icon,
-                            style: const TextStyle(fontSize: 20),
-                          ),
-                        ),
-                        title: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              item['place'] ?? '사용처 없음',
-                              style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                fontSize: 16,
-                                // 💡 디자인은 그대로, 고정지출만 보라색
-                                color: isFixedItem
-                                    ? Colors.purple
-                                    : Colors.black,
-                              ),
+                      return Material(
+                        color: Colors.transparent,
+                        child: ListTile(
+                          contentPadding: EdgeInsets.zero,
+
+                          onTap: () {
+                            if (isFixedItem) {
+                            } else {
+                              _showAddRecordSheet(
+                                initialData: item,
+                                docId: item['docId'],
+                              );
+                            }
+                          },
+                          leading: Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: AppColors.divider(context),
+                              shape: BoxShape.circle,
                             ),
-                            Text(
-                              catName,
-                              style: const TextStyle(
-                                fontSize: 12,
-                                color: AppColors.secondary,
-                              ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              icon,
+                              style: const TextStyle(fontSize: 20),
                             ),
-                          ],
-                        ),
-                        trailing: Text(
-                          "${isIncome ? '' : '-'}${NumberFormat('#,###').format(item['amount'])}원",
-                          style: TextStyle(
-                            fontSize: 16,
-                            // 💡 금액 색상도 디자인 규칙에 맞게
-                            color: isIncome
-                                ? AppColors.primary
-                                : (isFixedItem ? Colors.purple : Colors.black),
+                          ),
+                          title: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                item['place'] ?? '사용처 없음',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 15,
+                                  color: AppColors.textPrimary(context),
+                                ),
+                              ),
+                              Text(
+                                catName,
+                                style: const TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.secondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                          trailing: Text(
+                            "${isIncome ? '' : '-'}${NumberFormat('#,###').format(item['amount'])}원",
+                            style: TextStyle(
+                              fontSize: 15,
+                              color: isIncome
+                                  ? AppColors.primary(context)
+                                  : AppColors.textPrimary(context),
+                            ),
                           ),
                         ),
                       );
                     },
                   ),
                 ),
-                const SizedBox(height: 20),
+                const SizedBox(
+                  height: 10,
+                ),
+                Center(
+                  child: GestureDetector(
+                    onTap: () {
+                      Navigator.pop(context);
+                      setState(() => _isMenuOpen = true);
+                    },
+                    child: Row(
+                      mainAxisSize: MainAxisSize.max,
+                      children: [
+                        Container(
+                          width: 40,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: AppColors.divider(context),
+                            shape: BoxShape.circle,
+                          ),
+                          alignment: Alignment.center,
+                          child: const Icon(
+                            Icons.add,
+                            size: 24,
+                            color: AppColors.secondary,
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Text(
+                          "내역 추가",
+                          style: TextStyle(
+                            color: AppColors.textPrimary(context),
+                            fontSize: 15,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 30),
+
                 SizedBox(
                   width: double.infinity,
-                  height: 50,
+                  height: 55,
                   child: ElevatedButton(
                     onPressed: () => Navigator.pop(context),
                     style: ElevatedButton.styleFrom(
-                      backgroundColor: AppColors.primary,
+                      backgroundColor: AppColors.primary(context),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(10),
                       ),
-                      foregroundColor: Colors.white,
+                      foregroundColor: AppColors.background(context),
                       elevation: 0,
                     ),
                     child: const Text(
                       "확인",
                       style: TextStyle(
                         fontWeight: FontWeight.bold,
-                        fontSize: 16,
+                        fontSize: 18,
                       ),
                     ),
                   ),
                 ),
                 const SizedBox(
-                  height: 10,
+                  height: 20,
                 ),
               ],
             ),
@@ -2573,7 +3794,6 @@ class _CalendarViewState extends State<CalendarView> {
     );
   }
 
-  // --- 4. 기타 도우미 함수들 ---
   Widget _buildInputRow(String label, Widget field) => Row(
     children: [
       SizedBox(
@@ -2581,7 +3801,7 @@ class _CalendarViewState extends State<CalendarView> {
         child: Text(
           label,
           style: const TextStyle(
-            fontSize: 15,
+            fontSize: 14,
             fontWeight: FontWeight.bold,
             color: AppColors.secondary,
           ),
@@ -2593,12 +3813,11 @@ class _CalendarViewState extends State<CalendarView> {
     ],
   );
 
-  // InputDecoration과 선택 박스, 타입 버튼은 바텀시트에서 사용되는 UI 요소들로, 별도의 함수로 분리하여 재사용성을 높였습니다.
   InputDecoration _inputFieldDecoration(String hint) => InputDecoration(
     hintText: hint,
-    filled: false, // 배경색 제거
-    contentPadding: const EdgeInsets.symmetric(horizontal: 0), // 왼쪽 여백 제거
-    border: InputBorder.none, // 테두리 제거
+    filled: false,
+    contentPadding: const EdgeInsets.symmetric(horizontal: 0),
+    border: InputBorder.none,
     enabledBorder: InputBorder.none,
     focusedBorder: InputBorder.none,
   );
@@ -2607,19 +3826,22 @@ class _CalendarViewState extends State<CalendarView> {
     onTap: onTap,
     child: Container(
       alignment: Alignment.centerLeft,
-      padding: const EdgeInsets.symmetric(horizontal: 0), // 통일감을 위해 여백 제거
+      padding: const EdgeInsets.symmetric(horizontal: 0),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Text(
             value,
-            style: const TextStyle(fontSize: 15, color: Colors.black),
+            style: TextStyle(
+              fontSize: 15,
+              color: AppColors.textPrimary(context),
+            ),
           ),
           const Icon(
             Icons.chevron_right,
             size: 20,
             color: AppColors.secondary,
-          ), // 오른쪽 화살표
+          ),
         ],
       ),
     ),
@@ -2627,27 +3849,30 @@ class _CalendarViewState extends State<CalendarView> {
 
   Widget _buildTypeButton(String title, bool isSelected, VoidCallback onTap) =>
       GestureDetector(
-        // 1. Expanded를 삭제합니다.
         onTap: onTap,
         child: Container(
-          width: 60, // 2. 원하는 너비값을 직접 지정합니다.
-          height: 40,
+          width: 55,
+          height: 50,
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: AppColors.background(context),
             borderRadius: BorderRadius.circular(10),
             border: Border.all(
               color: isSelected
-                  ? AppColors.primary
+                  ? AppColors.primary(context)
                   : AppColors.secondary.withAlpha(80),
               width: isSelected ? 2 : 1,
             ),
           ),
           child: Text(
             title,
+            textAlign: TextAlign.center,
             style: TextStyle(
               fontSize: 14,
-              color: isSelected ? AppColors.primary : AppColors.secondary,
+              height: 1,
+              color: isSelected
+                  ? AppColors.primary(context)
+                  : AppColors.secondary,
               fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
             ),
           ),
@@ -2655,16 +3880,18 @@ class _CalendarViewState extends State<CalendarView> {
       );
 
   Future<Map<String, String>?> _showCategoryPicker(String type) async {
-    // 1. Firestore에서 해당 타입의 카테고리 가져오기
+    if (userId != null) {
+      await seedDefaultCategoriesIfEmpty(userId!);
+    }
+
     final snapshot = await FirebaseFirestore.instance
         .collection('users')
         .doc(userId)
         .collection('categories')
         .where('type', isEqualTo: type)
-        .orderBy('index', descending: false) // 순서대로 정렬 추가
+        .orderBy('index', descending: false)
         .get();
 
-    // 2. DB 데이터를 리스트로 변환
     List<Map<String, String>> currentCategories = snapshot.docs
         .map(
           (doc) => {
@@ -2679,9 +3906,9 @@ class _CalendarViewState extends State<CalendarView> {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       builder: (context) => Container(
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+        decoration: BoxDecoration(
+          color: AppColors.background(context),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(25)),
         ),
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -2700,13 +3927,12 @@ class _CalendarViewState extends State<CalendarView> {
                   ),
                   GestureDetector(
                     onTap: () => Navigator.pop(context),
-                    child: const Icon(Icons.close), // 순수 아이콘만 사용
+                    child: const Icon(Icons.close),
                   ),
                 ],
               ),
               const SizedBox(height: 20),
 
-              // 💡 격자 리스트 구성
               GridView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
@@ -2716,14 +3942,12 @@ class _CalendarViewState extends State<CalendarView> {
                   crossAxisSpacing: 5,
                   childAspectRatio: 0.9,
                 ),
-                // 💡 마지막 칸에 '편집' 버튼을 넣기 위해 길이를 +1 합니다.
                 itemCount: currentCategories.length + 1,
                 itemBuilder: (context, i) {
-                  // 💡 마지막 인덱스인 경우 '편집(설정)' 버튼 렌더링
                   if (i == currentCategories.length) {
                     return GestureDetector(
                       onTap: () {
-                        Navigator.pop(context); // 선택창 닫기
+                        Navigator.pop(context);
                         Navigator.push(
                           context,
                           MaterialPageRoute(
@@ -2733,9 +3957,11 @@ class _CalendarViewState extends State<CalendarView> {
                       },
                       child: Container(
                         decoration: BoxDecoration(
-                          color: AppColors.fieldColor, // 설정 버튼 배경색 (회색톤)
+                          color: AppColors.divider(context),
                           borderRadius: BorderRadius.circular(10),
-                          border: Border.all(color: Colors.white),
+                          border: Border.all(
+                            color: AppColors.background(context),
+                          ),
                         ),
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
@@ -2754,12 +3980,11 @@ class _CalendarViewState extends State<CalendarView> {
                     );
                   }
 
-                  // 💡 일반 카테고리 아이템
                   return GestureDetector(
                     onTap: () => Navigator.pop(context, currentCategories[i]),
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.white,
+                        color: AppColors.background(context),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(
                           color: AppColors.secondary.withAlpha(80),
@@ -2772,7 +3997,7 @@ class _CalendarViewState extends State<CalendarView> {
                             currentCategories[i]['icon']!,
                             style: const TextStyle(fontSize: 20),
                           ),
-                          const SizedBox(height: 4),
+                          const SizedBox(height: 5),
                           Text(
                             currentCategories[i]['name']!,
                             style: const TextStyle(fontSize: 14),
@@ -2791,30 +4016,6 @@ class _CalendarViewState extends State<CalendarView> {
     );
   }
 
-  void _showAddCategoryDialog() {
-    final TextEditingController nameController = TextEditingController();
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("새 카테고리"),
-        content: TextField(
-          controller: nameController,
-          decoration: const InputDecoration(labelText: "카테고리 이름"),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("취소"),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("추가"),
-          ),
-        ],
-      ),
-    );
-  }
-
   void _saveRecord({
     String? docId,
     required String type,
@@ -2825,14 +4026,13 @@ class _CalendarViewState extends State<CalendarView> {
     required String bankName,
     required DateTime date,
     required String memo,
-    bool isDelete = false, // 삭제 플래그
-    bool isSettlement = false, // 추가
-    int sPeople = 0, // 추가
-    List<String> sFriends = const [], // 추가
+    bool isDelete = false,
+    bool isSettlement = false,
+    int sPeople = 0,
+    List<String> sFriends = const [],
   }) async {
     try {
       if (isDelete && docId != null) {
-        // [삭제 로직]
         await FirebaseFirestore.instance
             .collection('users')
             .doc(userId)
@@ -2841,7 +4041,6 @@ class _CalendarViewState extends State<CalendarView> {
             .delete();
 
         if (!mounted) return;
-        // 수정창과 상세 팝업을 안전하게 닫음
         Navigator.of(context).pop();
         if (Navigator.of(context).canPop()) {
           Navigator.of(context).pop();
@@ -2877,7 +4076,6 @@ class _CalendarViewState extends State<CalendarView> {
       }
 
       if (docId != null && docId.isNotEmpty) {
-        // [수정 로직]
         await FirebaseFirestore.instance
             .collection('users')
             .doc(userId)
@@ -2887,9 +4085,10 @@ class _CalendarViewState extends State<CalendarView> {
 
         if (!mounted) return;
         Navigator.of(context).pop();
-        Navigator.of(context).pop();
+        if (Navigator.of(context).canPop()) {
+          Navigator.of(context).pop();
+        }
       } else {
-        // [추가 로직]
         await FirebaseFirestore.instance
             .collection('users')
             .doc(userId)
@@ -2898,10 +4097,12 @@ class _CalendarViewState extends State<CalendarView> {
 
         if (!mounted) return;
         Navigator.of(context).pop();
+
+        // 내역 추가 완료 후 일정 횟수마다 전면 광고 (프리미엄 제외)
+        InterstitialAdManager.instance.maybeShowOnRecordAdded();
       }
     } catch (e) {
       print("Error saving/deleting record: $e");
-      // 에러 발생 시 사용자에게 알림을 주거나 안전하게 팝업 닫기
     }
   }
 }

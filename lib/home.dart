@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_rekeep/analysis.dart';
 import 'package:flutter_rekeep/asset.dart';
+import 'package:flutter_rekeep/auth_service.dart';
 import 'package:flutter_rekeep/bottom_menu_bar.dart';
 import 'package:flutter_rekeep/calendar_view.dart';
 import 'package:flutter_rekeep/setting.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 class Home extends StatefulWidget {
   const Home({super.key});
@@ -24,9 +27,17 @@ class _HomeState extends State<Home> {
   ];
 
   @override
+  void initState() {
+    super.initState();
+  }
+
+  Future<void> _checkSecurity() async {}
+
+  Future<void> _checkAuth() async {}
+
+  @override
   Widget build(BuildContext context) {
     return Scaffold(
-      // 현재 인덱스에 맞는 화면만 body에 띄움
       body: _pages[_currentIndex],
 
       bottomNavigationBar: BottomMenuBar(
