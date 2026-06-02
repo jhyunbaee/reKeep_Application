@@ -339,88 +339,14 @@ class _AnalysisState extends State<Analysis> {
     final int lastMonth = currentMonth == 1 ? 12 : currentMonth - 1;
 
     if (_isBudgetLoading || _isPremiumLoading) {
-      return Stack(
-        children: [
-          Scaffold(
-            backgroundColor: AppColors.background(context),
-            body: Center(
-              child: CircularProgressIndicator(
-                color: AppColors.primary(context),
-              ),
-            ),
+      return Scaffold(
+        backgroundColor: AppColors.background(context),
+        body: Center(
+          child: CircularProgressIndicator(
+            color: AppColors.primary(context),
           ),
-
-          if (!_isPremium)
-            Positioned.fill(
-              child: ClipRect(
-                child: BackdropFilter(
-                  filter: ui.ImageFilter.blur(sigmaX: 8, sigmaY: 8),
-                  child: Container(
-                    color: Colors.black.withOpacity(0.3),
-                    child: SingleChildScrollView(
-                      physics: const NeverScrollableScrollPhysics(),
-                      child: Column(
-                        children: [
-                          const SizedBox(height: 16),
-                          // 월 비교 그래프 영역
-                          Container(
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 8,
-                            ),
-                            height: 220,
-                            decoration: BoxDecoration(
-                              color: AppColors.divider(context),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          // 카테고리별 지출
-                          Container(
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 8,
-                            ),
-                            height: 180,
-                            decoration: BoxDecoration(
-                              color: AppColors.divider(context),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          // 소비 습관
-                          Container(
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 8,
-                            ),
-                            height: 150,
-                            decoration: BoxDecoration(
-                              color: AppColors.divider(context),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          // 자산 설정
-                          Container(
-                            margin: const EdgeInsets.symmetric(
-                              horizontal: 24,
-                              vertical: 8,
-                            ),
-                            height: 200,
-                            decoration: BoxDecoration(
-                              color: AppColors.divider(context),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                          ),
-                          // 추가 여백
-                          const SizedBox(height: 100),
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-        ], // Stack children 닫기
-      ); // Stack 닫기
+        ),
+      );
     }
 
     final int daysInCurrentMonth = DateTime(
@@ -430,14 +356,6 @@ class _AnalysisState extends State<Analysis> {
     ).day;
     final int daysInLastMonth = DateTime(lastYear, lastMonth + 1, 0).day;
 
-    if (_isBudgetLoading || _isPremiumLoading) {
-      return Scaffold(
-        backgroundColor: AppColors.background(context),
-        body: Center(
-          child: CircularProgressIndicator(color: AppColors.primary(context)),
-        ),
-      );
-    }
     if (!_isPremium) {
       return Scaffold(
         backgroundColor: AppColors.background(context),
