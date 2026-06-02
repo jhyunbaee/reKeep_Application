@@ -1,8 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:flutter_rekeep/theme_provider.dart';
 
 class AppColors {
-  static const primary = Color(0xFF4F7CFF);
-  static const primaryLight = Color(0xFFF5F7FF);
+  // primary는 context에서 가져오는 방식으로 변경
+  static Color primary(BuildContext context) =>
+      context.watch<ThemeProvider>().primaryColor;
+
+  static const primaryColor = Color(0xFF4F7CFF);
   static const secondary = Color(0xFF777C89);
   static const fieldColor = Color(0xFFF2F3F7);
   static const pointColor = Color(0xFFFF6B6B);
@@ -23,10 +28,10 @@ class AppColors {
   static Color cardBackground(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark
       ? const Color(0xFF252932)
-      : const Color(0xFFF5F5F5); // fieldColor
+      : const Color(0xFFF5F5F5);
 
   static Color divider(BuildContext context) =>
       Theme.of(context).brightness == Brightness.dark
       ? const Color(0xFF252932)
-      : const Color(0xFFF5F5F5); // dividerColor
+      : const Color(0xFFF5F5F5);
 }
