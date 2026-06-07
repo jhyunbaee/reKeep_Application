@@ -248,12 +248,14 @@ class _ExportState extends State<Export> {
   }
 
   Future<void> _onExport() async {
-    final isPremium = await PremiumService.isPremium();
-    if (!isPremium) {
-      if (!mounted) return;
-      await PremiumGate.show(context, message: "데이터 내보내기는 프리미엄 회원만 사용할 수 있어요.");
-      return;
-    }
+    // 프리미엄 보류 - 데이터 내보내기 무료 공개
+    // (프리미엄 부활 시 아래 주석 블록 복원)
+    // final isPremium = await PremiumService.isPremium();
+    // if (!isPremium) {
+    //   if (!mounted) return;
+    //   await PremiumGate.show(context, message: "데이터 내보내기는 프리미엄 회원만 사용할 수 있어요.");
+    //   return;
+    // }
 
     setState(() => _isExporting = true);
 
