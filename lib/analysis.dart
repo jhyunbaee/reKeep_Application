@@ -8,6 +8,7 @@ import 'package:flutter_rekeep/constants/colors.dart';
 import 'dart:ui' as ui;
 import 'package:flutter_rekeep/premium_service.dart';
 import 'package:flutter_rekeep/premium_gate.dart';
+import 'package:flutter_rekeep/ads/banner_ad_widget.dart';
 import 'package:flutter_rekeep/theme_provider.dart';
 import 'package:provider/provider.dart';
 
@@ -38,10 +39,21 @@ class _AnalysisState extends State<Analysis> {
   int _paidVariableTotal = 0;
   int _upcomingVariableTotal = 0;
 
+  // ✅ 고정/변동수입
+  int _paidFixedIncomeTotal = 0;
+  int _upcomingFixedIncomeTotal = 0;
+  int _paidVariableIncomeTotal = 0;
+  int _upcomingVariableIncomeTotal = 0;
+
   List<Map<String, dynamic>> _paidFixedItems = [];
   List<Map<String, dynamic>> _upcomingFixedItems = [];
   List<Map<String, dynamic>> _paidVariableItems = [];
   List<Map<String, dynamic>> _upcomingVariableItems = [];
+
+  List<Map<String, dynamic>> _paidFixedIncomeItems = [];
+  List<Map<String, dynamic>> _upcomingFixedIncomeItems = [];
+  List<Map<String, dynamic>> _paidVariableIncomeItems = [];
+  List<Map<String, dynamic>> _upcomingVariableIncomeItems = [];
 
   bool _showPaidFixed = false;
   bool _showUpcomingFixed = false;
@@ -63,11 +75,12 @@ class _AnalysisState extends State<Analysis> {
   StreamSubscription? _recurringSubscription;
 
   Future<void> _loadInitialData() async {
-    // ✅ 프리미엄 체크 추가
-    final premium = await PremiumService.isPremium();
+    // 프리미엄 보류 - 분석 화면 전체 무료 공개
+    // (프리미엄 부활 시 아래 두 줄 주석 해제하고 _isPremium = true 줄 삭제)
+    // final premium = await PremiumService.isPremium();
     if (mounted) {
       setState(() {
-        _isPremium = premium;
+        _isPremium = true; // 무료 공개
         _isPremiumLoading = false;
       });
     }
@@ -78,6 +91,23 @@ class _AnalysisState extends State<Analysis> {
     setState(() {
       _isBudgetLoading = false;
     });
+  }
+
+  // ✅ 이번 달 딜레이가 설정된 매월 항목은 딜레이된 날짜를 결제일로 사용
+  int _effectiveRecurringDay(Map<String, dynamic> item, DateTime now) {
+    var dayData = item['day'] ?? '1';
+    int day = (dayData is String)
+        ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+        : (dayData as int);
+    final String period = (item['period'] ?? '매월').toString();
+    if (period != '매월') return day;
+    final String delayedMonth = (item['delayedMonth'] ?? '').toString();
+    final String nowKey = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+    final dd = item['delayedDay'];
+    if (delayedMonth == nowKey && dd is int && dd >= 1 && dd <= 31) {
+      return dd;
+    }
+    return day;
   }
 
   void _listenToRecurringExpenses() {
@@ -107,10 +137,15 @@ class _AnalysisState extends State<Analysis> {
           final int lastDayOfMonth = DateTime(now.year, now.month + 1, 0).day;
 
           int paid = 0, upcoming = 0, paidVar = 0, upcomingVar = 0;
+          int paidInc = 0, upcomingInc = 0, paidVarInc = 0, upcomingVarInc = 0;
           List<Map<String, dynamic>> paidFixedList = [];
           List<Map<String, dynamic>> upcomingFixedList = [];
           List<Map<String, dynamic>> paidVarList = [];
           List<Map<String, dynamic>> upcomingVarList = [];
+          List<Map<String, dynamic>> paidFixedIncList = [];
+          List<Map<String, dynamic>> upcomingFixedIncList = [];
+          List<Map<String, dynamic>> paidVarIncList = [];
+          List<Map<String, dynamic>> upcomingVarIncList = [];
 
           for (var doc in snapshot.docs) {
             final data = doc.data();
@@ -135,6 +170,22 @@ class _AnalysisState extends State<Analysis> {
                   upcoming += amount;
                   upcomingFixedList.add(item);
                 }
+              } else if (expenseType == '고정수입') {
+                if (isPaid) {
+                  paidInc += amount;
+                  paidFixedIncList.add(item);
+                } else {
+                  upcomingInc += amount;
+                  upcomingFixedIncList.add(item);
+                }
+              } else if (expenseType == '변동수입') {
+                if (isPaid) {
+                  paidVarInc += amount;
+                  paidVarIncList.add(item);
+                } else {
+                  upcomingVarInc += amount;
+                  upcomingVarIncList.add(item);
+                }
               } else {
                 if (isPaid) {
                   paidVar += amount;
@@ -147,9 +198,8 @@ class _AnalysisState extends State<Analysis> {
             }
 
             if (period == '매월') {
-              final int day = (dayData is String)
-                  ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
-                  : (dayData as int);
+              // ✅ 이번 달 딜레이가 설정돼 있으면 그 날짜 기준으로 분류
+              final int day = _effectiveRecurringDay(data, now);
               addItem(day, day <= today);
             } else if (period == '매주') {
               // 이번 달에 해당 요일이 몇 번 있는지 계산
@@ -181,6 +231,18 @@ class _AnalysisState extends State<Analysis> {
           upcomingVarList.sort(
             (a, b) => (a['day'] as int).compareTo(b['day'] as int),
           );
+          paidFixedIncList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          upcomingFixedIncList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          paidVarIncList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
+          upcomingVarIncList.sort(
+            (a, b) => (a['day'] as int).compareTo(b['day'] as int),
+          );
 
           if (mounted) {
             setState(() {
@@ -192,6 +254,14 @@ class _AnalysisState extends State<Analysis> {
               _upcomingFixedItems = upcomingFixedList;
               _paidVariableItems = paidVarList;
               _upcomingVariableItems = upcomingVarList;
+              _paidFixedIncomeTotal = paidInc;
+              _upcomingFixedIncomeTotal = upcomingInc;
+              _paidVariableIncomeTotal = paidVarInc;
+              _upcomingVariableIncomeTotal = upcomingVarInc;
+              _paidFixedIncomeItems = paidFixedIncList;
+              _upcomingFixedIncomeItems = upcomingFixedIncList;
+              _paidVariableIncomeItems = paidVarIncList;
+              _upcomingVariableIncomeItems = upcomingVarIncList;
             });
           }
         });
@@ -242,6 +312,9 @@ class _AnalysisState extends State<Analysis> {
         final String period = (data['period'] ?? '매월').toString();
         final String expenseType = data['expenseType'] ?? '고정지출';
         final dayData = data['day'] ?? '1일';
+
+        // ✅ 고정/변동수입은 지출 예산에 포함하지 않음
+        if (expenseType.contains('수입')) continue;
 
         int count = 1;
         if (period == '매월') {
@@ -604,6 +677,8 @@ class _AnalysisState extends State<Analysis> {
               List<Map<String, dynamic>> currentMonthExpenses = [];
               int currentMonthTotal = 0;
               int lastMonthTotal = 0;
+              // ✅ 지난달 1일 ~ 오늘과 같은 일자까지의 지출 (동일 기준 비교용)
+              int lastMonthSameDayTotal = 0;
               Set<int> currentMonthExpenseDays = {};
 
               List<int> dailyAmounts = List.generate(
@@ -615,12 +690,24 @@ class _AnalysisState extends State<Analysis> {
                 (_) => 0,
               );
 
+              // ✅ 오늘 이후 날짜의 기록은 합산에서 제외 (오늘 날짜 기준)
+              final DateTime todayForCutoff = DateTime.now();
+              final DateTime endOfToday = DateTime(
+                todayForCutoff.year,
+                todayForCutoff.month,
+                todayForCutoff.day,
+                23,
+                59,
+                59,
+              );
+
               if (snapshot.hasData) {
                 for (var doc in snapshot.data!.docs) {
                   var data = doc.data() as Map<String, dynamic>;
                   if (data['date'] == null) continue;
 
                   DateTime date = (data['date'] as Timestamp).toDate();
+                  if (date.isAfter(endOfToday)) continue;
                   int amount = (data['amount'] ?? 0) as int;
                   String category = data['category']?.toString() ?? "기타";
                   String type = data['type']?.toString() ?? "지출";
@@ -639,6 +726,9 @@ class _AnalysisState extends State<Analysis> {
                     } else if (date.month == lastMonth &&
                         date.year == lastYear) {
                       lastMonthTotal += amount;
+                      if (date.day <= todayForCutoff.day) {
+                        lastMonthSameDayTotal += amount;
+                      }
                       if (date.day <= daysInLastMonth) {
                         lastDailyAmounts[date.day] += amount;
                       }
@@ -747,6 +837,8 @@ class _AnalysisState extends State<Analysis> {
                         currentMonthTotal,
                         dailyCumulativeSum,
                         lastMonthCumulativeSum,
+                        // ✅ 이번 달 보기: 지난달 같은 날짜까지와 비교
+                        lastSameDay: isThisMonth ? lastMonthSameDayTotal : null,
                       ),
                     ),
                     _buildFullDivider(),
@@ -758,6 +850,8 @@ class _AnalysisState extends State<Analysis> {
                         daysInCurrentMonth,
                       ),
                     ),
+                    const SizedBox(height: 15),
+                    const Center(child: BannerAdWidget()),
                     _buildFullDivider(),
                     _withPadding(_buildSectionTitle("카테고리별 지출")),
                     _withPadding(
@@ -778,6 +872,16 @@ class _AnalysisState extends State<Analysis> {
                         upcomingFixedTotal: _upcomingFixedTotal,
                         paidVariableTotal: _paidVariableTotal,
                         upcomingVariableTotal: _upcomingVariableTotal,
+                        paidFixedIncomeItems: _paidFixedIncomeItems,
+                        upcomingFixedIncomeItems: _upcomingFixedIncomeItems,
+                        paidVariableIncomeItems: _paidVariableIncomeItems,
+                        upcomingVariableIncomeItems:
+                            _upcomingVariableIncomeItems,
+                        paidFixedIncomeTotal: _paidFixedIncomeTotal,
+                        upcomingFixedIncomeTotal: _upcomingFixedIncomeTotal,
+                        paidVariableIncomeTotal: _paidVariableIncomeTotal,
+                        upcomingVariableIncomeTotal:
+                            _upcomingVariableIncomeTotal,
                       ),
                     ),
                     const SizedBox(height: 20),
@@ -795,10 +899,14 @@ class _AnalysisState extends State<Analysis> {
     int last,
     int current,
     List<int> dailyData,
-    List<int> lastData,
-  ) {
+    List<int> lastData, {
+    int? lastSameDay,
+  }) {
     int baseMax = (last > current ? last : current);
     int maxVal = baseMax < 1000000 ? 1000000 : (baseMax * 1.2).toInt();
+    // ✅ 문구 비교: 이번 달이면 지난달 같은 날짜까지의 지출과 비교
+    // (차트는 지난달 전체 곡선을 그대로 표시)
+    final int lastForMessage = lastSameDay ?? last;
 
     return Column(
       children: [
@@ -840,9 +948,9 @@ class _AnalysisState extends State<Analysis> {
         ),
         const SizedBox(height: 20),
         Text(
-          current > last
-              ? "지난달보다 ${nf.format(current - last)}원 더 썼어요"
-              : "지난달보다 ${nf.format(last - current)}원 아꼈어요",
+          current > lastForMessage
+              ? "지난달보다 ${nf.format(current - lastForMessage)}원 더 썼어요"
+              : "지난달보다 ${nf.format(lastForMessage - current)}원 아꼈어요",
           style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
         ),
       ],
@@ -1417,6 +1525,14 @@ class _AssetSettingWidget extends StatefulWidget {
   final int upcomingFixedTotal;
   final int paidVariableTotal;
   final int upcomingVariableTotal;
+  final List<Map<String, dynamic>> paidFixedIncomeItems;
+  final List<Map<String, dynamic>> upcomingFixedIncomeItems;
+  final List<Map<String, dynamic>> paidVariableIncomeItems;
+  final List<Map<String, dynamic>> upcomingVariableIncomeItems;
+  final int paidFixedIncomeTotal;
+  final int upcomingFixedIncomeTotal;
+  final int paidVariableIncomeTotal;
+  final int upcomingVariableIncomeTotal;
 
   const _AssetSettingWidget({
     required this.paidFixedItems,
@@ -1427,6 +1543,14 @@ class _AssetSettingWidget extends StatefulWidget {
     required this.upcomingFixedTotal,
     required this.paidVariableTotal,
     required this.upcomingVariableTotal,
+    this.paidFixedIncomeItems = const [],
+    this.upcomingFixedIncomeItems = const [],
+    this.paidVariableIncomeItems = const [],
+    this.upcomingVariableIncomeItems = const [],
+    this.paidFixedIncomeTotal = 0,
+    this.upcomingFixedIncomeTotal = 0,
+    this.paidVariableIncomeTotal = 0,
+    this.upcomingVariableIncomeTotal = 0,
   });
 
   @override
@@ -1439,88 +1563,197 @@ class _AssetSettingWidgetState extends State<_AssetSettingWidget> {
   bool _showUpcomingFixed = false;
   bool _showPaidVariable = false;
   bool _showUpcomingVariable = false;
+  bool _showPaidFixedIncome = false;
+  bool _showUpcomingFixedIncome = false;
+  bool _showPaidVariableIncome = false;
+  bool _showUpcomingVariableIncome = false;
 
   @override
   Widget build(BuildContext context) {
     return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              "고정지출",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            Text(
-              "${nf.format(widget.paidFixedTotal + widget.upcomingFixedTotal)}원",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primary(context),
+        // ✅ 지출 묶음 (고정지출 + 변동지출)
+        _buildSectionCard(topMargin: 0, [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "고정지출",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
-            ),
-          ],
-        ),
-        Divider(
-          thickness: 1,
-          color: AppColors.divider(context),
-        ),
-        const SizedBox(height: 4),
-        _buildExpenseRow(
-          label: "나간 고정지출",
-          amount: widget.paidFixedTotal,
-          isExpanded: _showPaidFixed,
-          items: widget.paidFixedItems,
-          onToggle: () => setState(() => _showPaidFixed = !_showPaidFixed),
-        ),
-        const SizedBox(height: 8),
-        _buildExpenseRow(
-          label: "예정된 고정지출",
-          amount: widget.upcomingFixedTotal,
-          isExpanded: _showUpcomingFixed,
-          items: widget.upcomingFixedItems,
-          onToggle: () =>
-              setState(() => _showUpcomingFixed = !_showUpcomingFixed),
-        ),
-        const SizedBox(height: 20),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              "변동지출",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            Text(
-              "${nf.format(widget.paidVariableTotal + widget.upcomingVariableTotal)}원",
-              style: TextStyle(
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                color: AppColors.primary(context),
+              Text(
+                "${nf.format(widget.paidFixedTotal + widget.upcomingFixedTotal)}원",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary(context),
+                ),
               ),
+            ],
+          ),
+          Divider(
+            thickness: 1,
+            color: AppColors.divider(context),
+          ),
+          const SizedBox(height: 4),
+          _buildExpenseRow(
+            label: "나간 고정지출",
+            amount: widget.paidFixedTotal,
+            isExpanded: _showPaidFixed,
+            items: widget.paidFixedItems,
+            onToggle: () => setState(() => _showPaidFixed = !_showPaidFixed),
+          ),
+          const SizedBox(height: 8),
+          _buildExpenseRow(
+            label: "예정된 고정지출",
+            amount: widget.upcomingFixedTotal,
+            isExpanded: _showUpcomingFixed,
+            items: widget.upcomingFixedItems,
+            onToggle: () =>
+                setState(() => _showUpcomingFixed = !_showUpcomingFixed),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "변동지출",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              Text(
+                "${nf.format(widget.paidVariableTotal + widget.upcomingVariableTotal)}원",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary(context),
+                ),
+              ),
+            ],
+          ),
+          Divider(thickness: 1, color: AppColors.divider(context)),
+          const SizedBox(height: 4),
+          _buildExpenseRow(
+            label: "나간 변동지출",
+            amount: widget.paidVariableTotal,
+            isExpanded: _showPaidVariable,
+            items: widget.paidVariableItems,
+            onToggle: () =>
+                setState(() => _showPaidVariable = !_showPaidVariable),
+          ),
+          const SizedBox(height: 8),
+          _buildExpenseRow(
+            label: "예정된 변동지출",
+            amount: widget.upcomingVariableTotal,
+            isExpanded: _showUpcomingVariable,
+            items: widget.upcomingVariableItems,
+            onToggle: () =>
+                setState(() => _showUpcomingVariable = !_showUpcomingVariable),
+          ),
+        ]),
+        // ✅ 수입 묶음 (고정수입 + 변동수입)
+        _buildSectionCard([
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "고정수입",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              Text(
+                "${nf.format(widget.paidFixedIncomeTotal + widget.upcomingFixedIncomeTotal)}원",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary(context),
+                ),
+              ),
+            ],
+          ),
+          Divider(thickness: 1, color: AppColors.divider(context)),
+          const SizedBox(height: 4),
+          _buildExpenseRow(
+            label: "들어온 고정수입",
+            amount: widget.paidFixedIncomeTotal,
+            isExpanded: _showPaidFixedIncome,
+            items: widget.paidFixedIncomeItems,
+            onToggle: () =>
+                setState(() => _showPaidFixedIncome = !_showPaidFixedIncome),
+          ),
+          const SizedBox(height: 8),
+          _buildExpenseRow(
+            label: "예정된 고정수입",
+            amount: widget.upcomingFixedIncomeTotal,
+            isExpanded: _showUpcomingFixedIncome,
+            items: widget.upcomingFixedIncomeItems,
+            onToggle: () => setState(
+              () => _showUpcomingFixedIncome = !_showUpcomingFixedIncome,
             ),
-          ],
-        ),
-        Divider(thickness: 1, color: AppColors.divider(context)),
-        const SizedBox(height: 4),
-        _buildExpenseRow(
-          label: "나간 변동지출",
-          amount: widget.paidVariableTotal,
-          isExpanded: _showPaidVariable,
-          items: widget.paidVariableItems,
-          onToggle: () =>
-              setState(() => _showPaidVariable = !_showPaidVariable),
-        ),
-        const SizedBox(height: 8),
-        _buildExpenseRow(
-          label: "예정된 변동지출",
-          amount: widget.upcomingVariableTotal,
-          isExpanded: _showUpcomingVariable,
-          items: widget.upcomingVariableItems,
-          onToggle: () =>
-              setState(() => _showUpcomingVariable = !_showUpcomingVariable),
-        ),
+          ),
+          const SizedBox(height: 20),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                "변동수입",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+              Text(
+                "${nf.format(widget.paidVariableIncomeTotal + widget.upcomingVariableIncomeTotal)}원",
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: AppColors.primary(context),
+                ),
+              ),
+            ],
+          ),
+          Divider(thickness: 1, color: AppColors.divider(context)),
+          const SizedBox(height: 4),
+          _buildExpenseRow(
+            label: "들어온 변동수입",
+            amount: widget.paidVariableIncomeTotal,
+            isExpanded: _showPaidVariableIncome,
+            items: widget.paidVariableIncomeItems,
+            onToggle: () => setState(
+              () => _showPaidVariableIncome = !_showPaidVariableIncome,
+            ),
+          ),
+          const SizedBox(height: 8),
+          _buildExpenseRow(
+            label: "예정된 변동수입",
+            amount: widget.upcomingVariableIncomeTotal,
+            isExpanded: _showUpcomingVariableIncome,
+            items: widget.upcomingVariableIncomeItems,
+            onToggle: () => setState(
+              () => _showUpcomingVariableIncome = !_showUpcomingVariableIncome,
+            ),
+          ),
+        ]),
       ],
+    );
+  }
+
+  // ✅ 지출/수입 묶음 카드 (그림자 효과)
+  Widget _buildSectionCard(List<Widget> children, {double topMargin = 20}) {
+    return Container(
+      width: double.infinity,
+      margin: EdgeInsets.only(top: topMargin),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.background(context),
+        borderRadius: BorderRadius.circular(10),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.secondary.withOpacity(0.1),
+            blurRadius: 10,
+            offset: const Offset(0, 0),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
+      ),
     );
   }
 
