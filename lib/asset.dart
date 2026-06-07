@@ -80,25 +80,21 @@ class _AssetState extends State<Asset> {
                     _selectedMonth.year,
                     _selectedMonth.month - 1,
                   );
-                  final now = DateTime.now();
-                  final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
-
-                  // 3개월 이전이면 프리미엄 체크
-                  if (!targetMonth.isAfter(threeMonthsAgo)) {
-                    final isPremium = await PremiumService.isPremium();
-                    if (!isPremium) {
-                      if (!context.mounted) return;
-                      final go = await PremiumGate.show(
-                        context,
-                        message: "3개월 이전 내역은\n프리미엄 회원만 조회할 수 있어요.",
-                      );
-                      if (go == true) {
-                        // TODO: 프리미엄 페이지로 이동
-                        // Navigator.push(context, MaterialPageRoute(builder: (_) => const PremiumPage()));
-                      }
-                      return;
-                    }
-                  }
+                  // 프리미엄 보류 - 3개월 이전 내역도 무료 공개
+                  // (프리미엄 부활 시 아래 주석 블록 복원)
+                  // final now = DateTime.now();
+                  // final threeMonthsAgo = DateTime(now.year, now.month - 3, 1);
+                  // if (!targetMonth.isAfter(threeMonthsAgo)) {
+                  //   final isPremium = await PremiumService.isPremium();
+                  //   if (!isPremium) {
+                  //     if (!context.mounted) return;
+                  //     final go = await PremiumGate.show(
+                  //       context,
+                  //       message: "3개월 이전 내역은\n프리미엄 회원만 조회할 수 있어요.",
+                  //     );
+                  //     return;
+                  //   }
+                  // }
                   setState(() => _selectedMonth = targetMonth);
                 },
                 behavior: HitTestBehavior.opaque,
@@ -173,18 +169,11 @@ class _AssetState extends State<Asset> {
                 .snapshots(),
             builder: (context, lastMonthSnapshot) {
               return StreamBuilder<QuerySnapshot>(
+                // ✅ 누적 자산: 첫 기록부터 선택월 말까지 전체 조회
                 stream: FirebaseFirestore.instance
                     .collection('users')
                     .doc(userId ?? 'guest')
                     .collection('records')
-                    .where(
-                      'date',
-                      isGreaterThanOrEqualTo: DateTime(
-                        _selectedMonth.year,
-                        _selectedMonth.month,
-                        1,
-                      ),
-                    )
                     .where(
                       'date',
                       isLessThan: DateTime(
@@ -206,14 +195,54 @@ class _AssetState extends State<Asset> {
                   int lastMonthSameDayExp = 0;
                   int currentMonthRecordsOnly = 0;
 
+                  List<DocumentSnapshot> allDocs = [];
                   List<DocumentSnapshot> monthlyDocs = [];
                   DateTime now = DateTime.now();
 
-                  // ✅ 이번달 records 계산
-                  if (snapshot.hasData) {
-                    monthlyDocs = snapshot.data!.docs;
+                  final DateTime currentMonthStart = DateTime(
+                    now.year,
+                    now.month,
+                    1,
+                  );
+                  final DateTime selectedMonthStart = DateTime(
+                    _selectedMonth.year,
+                    _selectedMonth.month,
+                    1,
+                  );
+                  final bool isCurrentMonthView = selectedMonthStart
+                      .isAtSameMomentAs(currentMonthStart);
+                  // ✅ 미래 달은 아직 시작 전이므로 자산을 0원으로 표시
+                  // (그 달이 실제로 되면 이전 달까지의 기록이 자동 반영됨)
+                  final bool isFutureMonth = selectedMonthStart.isAfter(
+                    currentMonthStart,
+                  );
 
-                    for (var doc in monthlyDocs) {
+                  // ✅ 누적 자산 계산 (첫 기록 ~ 선택월 말까지의 모든 records)
+                  // - 현재 달 보기: 오늘 이후 날짜의 기록만 제외
+                  // - 과거 달 보기: 그 달 말까지 전부 포함
+                  // - 미래 달 보기: 합산하지 않음 (0원)
+                  final DateTime endOfToday = DateTime(
+                    now.year,
+                    now.month,
+                    now.day,
+                    23,
+                    59,
+                    59,
+                  );
+
+                  if (snapshot.hasData) {
+                    allDocs = snapshot.data!.docs.where((doc) {
+                      final data = doc.data() as Map<String, dynamic>;
+                      final ts = data['date'];
+                      if (ts is! Timestamp) return false;
+                      if (isCurrentMonthView) {
+                        return !ts.toDate().isAfter(endOfToday);
+                      }
+                      // 쿼리 상한(선택월 말)이 이미 적용되어 있음
+                      return true;
+                    }).toList();
+
+                    for (var doc in allDocs) {
                       var data = doc.data() as Map<String, dynamic>;
                       int amount = data['amount'] ?? 0;
                       String type = data['type'] ?? '지출';
@@ -223,11 +252,10 @@ class _AssetState extends State<Asset> {
                       Timestamp ts = data['date'];
                       DateTime date = ts.toDate();
 
-                      if (date.year == _selectedMonth.year &&
-                          date.month == _selectedMonth.month) {
+                      // 현금/카드/이체 누적 (이전 달들 포함)
+                      // ✅ 미래 달은 0원이어야 하므로 합산하지 않음
+                      if (!isFutureMonth) {
                         if (type == '지출' || type == '이체(지출)') {
-                          totalExpense += amount;
-                          currentMonthRecordsOnly += amount;
                           if (type == '이체(지출)') {
                             totalTransfer -= amount;
                           } else {
@@ -247,6 +275,16 @@ class _AssetState extends State<Asset> {
                           }
                         }
                       }
+
+                      // 선택월 데이터 (거래 내역 표시 + 지난달 비교용)
+                      if (date.year == _selectedMonth.year &&
+                          date.month == _selectedMonth.month) {
+                        monthlyDocs.add(doc);
+                        if (type == '지출' || type == '이체(지출)') {
+                          totalExpense += amount;
+                          currentMonthRecordsOnly += amount;
+                        }
+                      }
                     } // for 루프 끝
                   } // if (snapshot.hasData) 끝
 
@@ -264,29 +302,31 @@ class _AssetState extends State<Asset> {
                     }
                   }
 
-                  // ✅ 이번달에만 고정/변동지출 포함
-                  final bool isCurrentMonthNow =
-                      _selectedMonth.year == now.year &&
-                      _selectedMonth.month == now.month;
-
-                  if (isCurrentMonthNow) {
+                  // ✅ 고정/변동지출·수입: 현재 달을 볼 때만 1회분 반영
+                  // (매달 새로 설정되는 항목이라 과거/미래 달에는 반영하지 않음)
+                  if (isCurrentMonthView) {
                     for (var item in recurringItems) {
                       final int amount = (item['amount'] ?? 0) as int;
-                      var dayData = item['day'] ?? '1';
-                      final int day = (dayData is String)
-                          ? int.tryParse(
-                                  dayData.replaceAll(RegExp(r'[^0-9]'), ''),
-                                ) ??
-                                1
-                          : (dayData as int);
-                      if (day > now.day) continue;
+                      // ✅ 딜레이된 항목은 변경된 날짜 기준으로 반영
+                      final int day = _effectiveRecurringDay(item, now);
+
+                      if (isCurrentMonthView && day > now.day) continue;
+
+                      // ✅ 고정/변동수입은 자산에 더하고, 지출은 뺀다
+                      final String recurringType =
+                          (item['expenseType'] ?? '고정지출') as String;
+                      final bool isIncomeItem = recurringType.contains('수입');
+
+                      if (!isIncomeItem && isCurrentMonthView) {
+                        totalExpense += amount;
+                      }
                       final String itemBankName =
                           (item['bankName'] ?? '') as String;
-                      totalExpense += amount;
+                      final int signed = isIncomeItem ? amount : -amount;
                       if (itemBankName.isEmpty) {
-                        totalCash -= amount;
+                        totalCash += signed;
                       } else {
-                        totalCard -= amount;
+                        totalCard += signed;
                       }
                     }
                   }
@@ -312,7 +352,10 @@ class _AssetState extends State<Asset> {
                         ),
                         _buildFullDivider(),
                         _buildSectionHeader("카드"),
-                        _buildAccountList(monthlyDocs, recurringItems),
+                        _buildAccountList(
+                          allDocs,
+                          recurringItems,
+                        ),
                         _buildFullDivider(),
                         _buildSectionHeader(
                           "${_selectedMonth.month}월 거래 내역",
@@ -434,6 +477,23 @@ class _AssetState extends State<Asset> {
     );
   }
 
+  // ✅ 이번 달 딜레이가 설정된 매월 항목은 딜레이된 날짜를 결제일로 사용
+  int _effectiveRecurringDay(Map<String, dynamic> item, DateTime now) {
+    var dayData = item['day'] ?? '1';
+    int day = (dayData is String)
+        ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+        : (dayData as int);
+    final String period = (item['period'] ?? '매월').toString();
+    if (period != '매월') return day;
+    final String delayedMonth = (item['delayedMonth'] ?? '').toString();
+    final String nowKey = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+    final dd = item['delayedDay'];
+    if (delayedMonth == nowKey && dd is int && dd >= 1 && dd <= 31) {
+      return dd;
+    }
+    return day;
+  }
+
   Widget _buildFullDivider() => Column(
     children: [
       const SizedBox(height: 30),
@@ -552,7 +612,7 @@ class _AssetState extends State<Asset> {
   }
 
   Widget _buildAccountList(
-    List<DocumentSnapshot> monthlyDocs,
+    List<DocumentSnapshot> allDocs,
     List<Map<String, dynamic>> recurringItems,
   ) {
     return StreamBuilder<QuerySnapshot>(
@@ -584,7 +644,24 @@ class _AssetState extends State<Asset> {
           for (var bank in registeredBanks) bank: 0,
         };
 
-        for (var doc in monthlyDocs) {
+        final DateTime now = DateTime.now();
+        final DateTime currentMonthStart = DateTime(now.year, now.month, 1);
+        final DateTime selectedMonthStart = DateTime(
+          _selectedMonth.year,
+          _selectedMonth.month,
+          1,
+        );
+        final bool isCurrentMonthView = selectedMonthStart.isAtSameMomentAs(
+          currentMonthStart,
+        );
+        // ✅ 미래 달은 아직 시작 전이므로 0원 (합산하지 않음)
+        final bool isFutureMonth = selectedMonthStart.isAfter(
+          currentMonthStart,
+        );
+
+        // ✅ 누적: 첫 기록 ~ 선택월 말까지 전체 기록으로 카드별 잔액 계산
+        for (var doc in allDocs) {
+          if (isFutureMonth) break;
           var data = doc.data() as Map<String, dynamic>;
           int amount = data['amount'] ?? 0;
           String type = data['type'] ?? '지출';
@@ -628,26 +705,26 @@ class _AssetState extends State<Asset> {
           }
         }
 
-        final int today = DateTime.now().day;
-        final bool isCurrentMonth =
-            _selectedMonth.year == DateTime.now().year &&
-            _selectedMonth.month == DateTime.now().month;
-
-        if (isCurrentMonth) {
+        // ✅ 고정/변동지출·수입: 현재 달을 볼 때만 1회분 반영
+        if (isCurrentMonthView) {
           for (var item in recurringItems) {
             final String itemBankName = (item['bankName'] ?? '') as String;
             if (itemBankName.isEmpty) continue;
             if (!registeredBanks.contains(itemBankName)) continue;
 
             final int amount = (item['amount'] ?? 0) as int;
-            var dayData = item['day'] ?? '1';
-            final int day = (dayData is String)
-                ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
-                : (dayData as int);
+            // ✅ 딜레이된 항목은 변경된 날짜 기준으로 반영
+            final int day = _effectiveRecurringDay(item, now);
 
-            if (day > today) continue;
+            if (isCurrentMonthView && day > now.day) continue;
+
+            // ✅ 고정/변동수입은 더하고, 지출은 뺀다
+            final String recurringType =
+                (item['expenseType'] ?? '고정지출') as String;
+            final int signed = recurringType.contains('수입') ? amount : -amount;
+
             bankAmounts[itemBankName] =
-                (bankAmounts[itemBankName] ?? 0) - amount;
+                (bankAmounts[itemBankName] ?? 0) + signed;
           }
         }
 
@@ -689,9 +766,9 @@ class _AssetState extends State<Asset> {
       if (bankName.contains("네이버")) return const Color(0xFF00de5a);
       if (bankName.contains("MG")) return const Color(0xFF01316c);
       if (bankName.contains("케이")) return const Color(0xFF0114a7);
-      if (bankName.contains("트래블")) return const Color(0xFFffffff);
-      if (bankName.contains("우체국")) return const Color(0xFFffffff);
-      if (bankName.contains("토스")) return const Color(0xFF000000);
+      if (bankName.contains("트래블")) return const Color(0xFFFFFFFF);
+      if (bankName.contains("우체국")) return const Color(0xFFFFFFFF);
+      if (bankName.contains("토스")) return const Color(0xFFFFFFFF);
       if (bankName.contains("기업")) return const Color(0xFF014898);
       if (bankName.contains("수협")) return const Color(0xFF0169b3);
       return AppColors.divider(context);
@@ -808,19 +885,28 @@ class _AssetState extends State<Asset> {
     // ✅ 이번달에만 고정/변동지출 표시
     if (isCurrentMonth) {
       for (var item in recurringItems) {
-        var dayData = item['day'] ?? '1일';
-        int day = (dayData is String)
-            ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
-            : (dayData as int);
+        // ✅ 딜레이된 항목은 변경된 날짜 기준으로 표시
+        int day = _effectiveRecurringDay(item, now);
 
         if (day > now.day) continue; // 오늘 이후는 제외
 
         String expenseType = item['expenseType'] ?? '고정지출';
-        String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+        // ✅ 고정/변동수입은 수입으로 표시
+        final bool isIncomeItem = expenseType.contains('수입');
+        String icon;
+        if (expenseType == '고정지출') {
+          icon = '🗓️';
+        } else if (expenseType == '변동지출') {
+          icon = '📊';
+        } else if (expenseType == '고정수입') {
+          icon = '💰';
+        } else {
+          icon = '💵';
+        }
         recurringAsDocs.add({
           'place': item['name'] ?? '',
           'amount': item['amount'] ?? 0,
-          'type': '지출',
+          'type': isIncomeItem ? '수입' : '지출',
           'category': {'name': expenseType, 'icon': icon},
           'bankName': item['bankName'] ?? '',
           'date': DateTime(_selectedMonth.year, _selectedMonth.month, day),
