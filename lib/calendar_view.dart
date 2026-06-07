@@ -10,6 +10,7 @@ import 'package:table_calendar/table_calendar.dart';
 import 'package:intl/intl.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter_rekeep/constants/colors.dart';
 import 'dart:io';
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
@@ -38,6 +39,8 @@ class _CalendarViewState extends State<CalendarView> {
   final String? currentUserId = FirebaseAuth.instance.currentUser?.uid;
 
   Map<DateTime, List<Map<String, dynamic>>> _events = {};
+  // ✅ 누적 총자산 계산용 고정/변동지출·수입 원본 목록
+  List<Map<String, dynamic>> _recurringRawItems = [];
 
   @override
   void initState() {
@@ -130,8 +133,8 @@ class _CalendarViewState extends State<CalendarView> {
             final daysInMonth = DateUtils.getDaysInMonth(now.year, now.month);
 
             if (period == '매월') {
-              int day =
-                  int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1;
+              // ✅ 이번 달 딜레이가 설정돼 있으면 그 날짜로 표시
+              int day = _effectiveRecurringDay(data, now);
               if (day <= daysInMonth) {
                 addEvent(
                   DateTime(now.year, now.month, day),
@@ -164,7 +167,16 @@ class _CalendarViewState extends State<CalendarView> {
           if (!mounted) return;
           setState(() {
             _events = fetchedEvents;
+            _recurringRawItems = snapshot.docs.map((doc) {
+              final m = Map<String, dynamic>.from(doc.data());
+              m['_docId'] = doc.id;
+              return m;
+            }).toList();
           });
+          // ✅ 오늘 예정된 고정/변동 항목 확인 팝업 (세션당 1회)
+          WidgetsBinding.instance.addPostFrameCallback(
+            (_) => _checkDueRecurringItems(),
+          );
         });
   }
 
@@ -725,6 +737,18 @@ class _CalendarViewState extends State<CalendarView> {
               int totalIncome = 0;
               int totalExpense = 0;
 
+              // ✅ 상단 수입/지출/총자산 합계는 오늘 날짜까지만 반영
+              // (달력 셀과 날짜별 상세에는 오늘 이후 내역도 그대로 표시)
+              final DateTime nowForSummary = DateTime.now();
+              final DateTime endOfToday = DateTime(
+                nowForSummary.year,
+                nowForSummary.month,
+                nowForSummary.day,
+                23,
+                59,
+                59,
+              );
+
               if (snapshot.hasData) {
                 for (var doc in snapshot.data!.docs) {
                   var data = doc.data() as Map<String, dynamic>;
@@ -739,7 +763,9 @@ class _CalendarViewState extends State<CalendarView> {
 
                   dailyRecords[dateKey]!.add(data);
 
-                  if (data['type'] == '수입') {
+                  if (date.isAfter(endOfToday)) continue;
+
+                  if (data['type'] == '수입' || data['type'] == '이체(수입)') {
                     totalIncome += (data['amount'] as int);
                   } else if (data['type'] == '지출' || data['type'] == '이체(지출)') {
                     totalExpense += (data['amount'] as int);
@@ -749,9 +775,16 @@ class _CalendarViewState extends State<CalendarView> {
 
               _events.forEach((date, items) {
                 if (date.year == _focusedDay.year &&
-                    date.month == _focusedDay.month) {
+                    date.month == _focusedDay.month &&
+                    !date.isAfter(endOfToday)) {
                   for (var item in items) {
-                    totalExpense += (item['amount'] as int);
+                    // ✅ 고정/변동수입은 수입으로 합산
+                    final String et = (item['expenseType'] ?? '고정지출') as String;
+                    if (et.contains('수입')) {
+                      totalIncome += (item['amount'] as int);
+                    } else {
+                      totalExpense += (item['amount'] as int);
+                    }
                   }
                 }
               });
@@ -822,10 +855,16 @@ class _CalendarViewState extends State<CalendarView> {
                               date.month,
                               date.day,
                             );
+                            // ✅ 수입 타입은 무지출 판정에서 제외
                             int fixedAmount = (_events[normalizedDay] ?? [])
                                 .fold(
                                   0,
-                                  (sum, item) => sum + (item['amount'] as int),
+                                  (sum, item) =>
+                                      ((item['expenseType'] ?? '고정지출')
+                                              as String)
+                                          .contains('수입')
+                                      ? sum
+                                      : sum + (item['amount'] as int),
                                 );
 
                             String dateKey = DateFormat(
@@ -1604,7 +1643,7 @@ class _CalendarViewState extends State<CalendarView> {
     int totalBalance = income - expense;
     if (records != null) {
       for (var r in records) {
-        if (r['type'] == '수입') {
+        if (r['type'] == '수입' || r['type'] == '이체(수입)') {
           income += (r['amount'] as int);
         } else if (r['type'] == '지출' || r['type'] == '이체(지출)') {
           expense += (r['amount'] as int);
@@ -1613,14 +1652,17 @@ class _CalendarViewState extends State<CalendarView> {
     }
 
     DateTime normalizedDate = DateTime(date.year, date.month, date.day);
-    int fixedAmount = (fixedExpenses[normalizedDate] ?? []).fold(
-      0,
-      (sum, item) => sum + (item['amount'] as int),
-    );
-
-    List<String> fixedNames = (fixedExpenses[normalizedDate] ?? [])
-        .map((item) => item['name'] as String)
-        .toList();
+    // ✅ 고정 항목을 수입/지출로 분리
+    int fixedAmount = 0;
+    int fixedIncomeAmount = 0;
+    for (var item in (fixedExpenses[normalizedDate] ?? [])) {
+      final String et = (item['expenseType'] ?? '고정지출') as String;
+      if (et.contains('수입')) {
+        fixedIncomeAmount += (item['amount'] as int);
+      } else {
+        fixedAmount += (item['amount'] as int);
+      }
+    }
 
     return Column(
       children: [
@@ -1635,16 +1677,16 @@ class _CalendarViewState extends State<CalendarView> {
                 : (isSelected ? FontWeight.bold : FontWeight.normal),
           ),
         ),
-        if (fixedNames.isNotEmpty) const SizedBox(height: 5),
         SizedBox(
           height: 26,
           child: Builder(
             builder: (context) {
               List<({String text, Color color})> items = [];
 
-              if (income > 0) {
+              if (income + fixedIncomeAmount > 0) {
                 items.add((
-                  text: "+${NumberFormat('#,###').format(income)}",
+                  text:
+                      "+${NumberFormat('#,###').format(income + fixedIncomeAmount)}",
                   color: AppColors.primary(context),
                 ));
               }
@@ -1716,19 +1758,311 @@ class _CalendarViewState extends State<CalendarView> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Text(
-                "현 자산",
+                "총 자산",
                 style: TextStyle(fontSize: 12, color: AppColors.secondary),
               ),
-              Text(
-                "${NumberFormat('#,###').format(income - expense)}원",
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+              _buildCumulativeAssetText(),
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  // ✅ 누적 총자산 (오늘 날짜 기준)
+  // - 첫 기록 ~ 오늘까지의 records 합산 (오늘 이후 날짜 제외)
+  // - 미래 달은 0원 (그 달이 실제로 되면 이전 달 자산이 자동 반영)
+  // - 고정/변동지출·수입은 현재 달을 볼 때만, 결제일이 오늘 이전인 항목만 반영
+  Widget _buildCumulativeAssetText() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(currentUserId)
+          .collection('records')
+          .where(
+            'date',
+            isLessThan: DateTime(_focusedDay.year, _focusedDay.month + 1, 1),
+          )
+          .snapshots(),
+      builder: (context, snapshot) {
+        final DateTime now = DateTime.now();
+        final DateTime currentMonthStart = DateTime(now.year, now.month, 1);
+        final DateTime focusedMonthStart = DateTime(
+          _focusedDay.year,
+          _focusedDay.month,
+          1,
+        );
+        // ✅ 미래 달은 아직 시작 전이므로 0원
+        // (그 달이 실제로 되면 이전 달까지의 자산이 자동 반영됨)
+        if (focusedMonthStart.isAfter(currentMonthStart)) {
+          return const Text(
+            "0원",
+            style: TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+            ),
+          );
+        }
+        final bool isCurrentMonthView = focusedMonthStart.isAtSameMomentAs(
+          currentMonthStart,
+        );
+        final DateTime endOfToday = DateTime(
+          now.year,
+          now.month,
+          now.day,
+          23,
+          59,
+          59,
+        );
+
+        int total = 0;
+
+        if (snapshot.hasData) {
+          for (var doc in snapshot.data!.docs) {
+            final data = doc.data() as Map<String, dynamic>;
+            final ts = data['date'];
+            if (ts is! Timestamp) continue;
+            // ✅ 오늘 이후 날짜의 기록은 제외
+            if (ts.toDate().isAfter(endOfToday)) continue;
+            final int amount = (data['amount'] ?? 0) as int;
+            final String type = (data['type'] ?? '지출').toString();
+            if (type == '수입' || type == '이체(수입)') {
+              total += amount;
+            } else if (type == '지출' || type == '이체(지출)') {
+              total -= amount;
+            }
+          }
+        }
+
+        // ✅ 고정/변동지출·수입은 현재 달을 볼 때만,
+        // 결제일(딜레이 반영)이 오늘 이전인 항목만 반영
+        if (isCurrentMonthView) {
+          for (var item in _recurringRawItems) {
+            final int amount = (item['amount'] ?? 0) as int;
+            final int day = _effectiveRecurringDay(item, now);
+            if (day > now.day) continue;
+
+            final String et = (item['expenseType'] ?? '고정지출').toString();
+            total += et.contains('수입') ? amount : -amount;
+          }
+        }
+
+        return Text(
+          "${NumberFormat('#,###').format(total)}원",
+          style: const TextStyle(
+            fontSize: 18,
+            fontWeight: FontWeight.bold,
+          ),
+        );
+      },
+    );
+  }
+
+  // ✅ 이번 달 딜레이가 설정된 매월 항목은 딜레이된 날짜를 결제일로 사용
+  int _effectiveRecurringDay(Map<String, dynamic> item, DateTime now) {
+    var dayData = item['day'] ?? '1';
+    int day = (dayData is String)
+        ? int.tryParse(dayData.replaceAll(RegExp(r'[^0-9]'), '')) ?? 1
+        : (dayData as int);
+    final String period = (item['period'] ?? '매월').toString();
+    if (period != '매월') return day;
+    final String delayedMonth = (item['delayedMonth'] ?? '').toString();
+    final String nowKey = "${now.year}-${now.month.toString().padLeft(2, '0')}";
+    final dd = item['delayedDay'];
+    if (delayedMonth == nowKey && dd is int && dd >= 1 && dd <= 31) {
+      return dd;
+    }
+    return day;
+  }
+
+  // ✅ 오늘 예정된 고정/변동지출·수입 확인 팝업
+  bool _didCheckDueItems = false;
+
+  Future<void> _checkDueRecurringItems() async {
+    if (_didCheckDueItems) return;
+    if (currentUserId == null) return;
+
+    // ✅ 알림 설정에서 당일 확인창을 꺼둔 경우 띄우지 않음 (기본: 켜짐)
+    final prefs = await SharedPreferences.getInstance();
+    final bool dueCheckEnabled = prefs.getBool('is_due_check_enabled') ?? true;
+    if (!dueCheckEnabled) return;
+
+    _didCheckDueItems = true;
+
+    final DateTime now = DateTime.now();
+    final String todayKey = DateFormat('yyyy-MM-dd').format(now);
+
+    const weekdayMap = {
+      '월요일': 1,
+      '화요일': 2,
+      '수요일': 3,
+      '목요일': 4,
+      '금요일': 5,
+      '토요일': 6,
+      '일요일': 7,
+    };
+
+    final items = List<Map<String, dynamic>>.from(_recurringRawItems);
+    for (final item in items) {
+      final String docId = (item['_docId'] ?? '').toString();
+      final String name = (item['name'] ?? '').toString();
+      final int amount = (item['amount'] ?? 0) as int;
+      if (docId.isEmpty || name.isEmpty || amount == 0) continue;
+      // 오늘 이미 확인(또는 딜레이 처리)한 항목은 다시 묻지 않음
+      if ((item['confirmedFor'] ?? '') == todayKey) continue;
+
+      final String period = (item['period'] ?? '매월').toString();
+      bool dueToday = false;
+      if (period == '매월') {
+        dueToday = _effectiveRecurringDay(item, now) == now.day;
+      } else if (period == '매주') {
+        dueToday = weekdayMap[(item['day'] ?? '').toString()] == now.weekday;
+      } else if (period == '매일') {
+        dueToday = true;
+      }
+      if (!dueToday) continue;
+
+      if (!mounted) return;
+      await _showRecurringCheckDialog(docId, item, now, todayKey);
+    }
+  }
+
+  Future<void> _showRecurringCheckDialog(
+    String docId,
+    Map<String, dynamic> item,
+    DateTime now,
+    String todayKey,
+  ) async {
+    final String expenseType = (item['expenseType'] ?? '고정지출').toString();
+    final bool isIncome = expenseType.contains('수입');
+    final String name = (item['name'] ?? '').toString();
+    final String amountStr = NumberFormat(
+      '#,###',
+    ).format((item['amount'] ?? 0) as int);
+
+    final bool? answer = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppColors.background(context),
+        title: Text(
+          "$expenseType 확인",
+          style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+        ),
+        content: Text(
+          isIncome
+              ? "오늘 $name($expenseType)\n$amountStr원이 들어왔나요?"
+              : "오늘 $name($expenseType)\n$amountStr원이 빠져나갔나요?",
+          style: const TextStyle(fontSize: 14),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text(
+              "아니요",
+              style: TextStyle(
+                color: AppColors.secondary,
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(
+              "네",
+              style: TextStyle(
+                color: AppColors.primary(context),
+                fontWeight: FontWeight.bold,
+                fontSize: 14,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    final ref = FirebaseFirestore.instance
+        .collection('users')
+        .doc(currentUserId)
+        .collection('recurring_expenses')
+        .doc(docId);
+
+    if (answer == true) {
+      // 잘 처리됨 → 오늘은 다시 묻지 않음
+      await ref.set({'confirmedFor': todayKey}, SetOptions(merge: true));
+    } else if (answer == false) {
+      // 딜레이 → 날짜 선택
+      if (!mounted) return;
+      final DateTime? picked = await _showDelayDatePicker(name, now);
+      if (picked != null) {
+        await ref.set({
+          'confirmedFor': todayKey,
+          'delayedDay': picked.day,
+          'delayedMonth': "${now.year}-${now.month.toString().padLeft(2, '0')}",
+        }, SetOptions(merge: true));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text("$name 예정일이 ${picked.day}일로 변경되었습니다.")),
+          );
+        }
+      }
+      // 날짜 선택을 취소하면 저장하지 않음 → 다음 진입 시 다시 물어봄
+    }
+    // 팝업 바깥을 탭해서 닫으면 다음 진입 시 다고시 물어봄
+  }
+
+  Future<DateTime?> _showDelayDatePicker(String name, DateTime now) {
+    final DateTime minDate = DateTime(now.year, now.month, now.day);
+    final DateTime maxDate = DateTime(now.year, now.month + 1, 0);
+    DateTime tempDate = minDate;
+
+    return showModalBottomSheet<DateTime>(
+      context: context,
+      backgroundColor: AppColors.background(context),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(25)),
+      ),
+      builder: (context) => SizedBox(
+        height: 320,
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.only(left: 24, right: 10, top: 10),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    "$name 예정일 변경",
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, tempDate),
+                    child: Text(
+                      "완료",
+                      style: TextStyle(
+                        color: AppColors.primary(context),
+                        fontSize: 15,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: CupertinoDatePicker(
+                mode: CupertinoDatePickerMode.date,
+                minimumDate: minDate,
+                maximumDate: maxDate,
+                initialDateTime: minDate,
+                onDateTimeChanged: (d) => tempDate = d,
+              ),
+            ),
+            const SizedBox(height: 20),
+          ],
+        ),
       ),
     );
   }
@@ -1779,9 +2113,13 @@ class _CalendarViewState extends State<CalendarView> {
         _focusedDay.month,
         i,
       );
+      // ✅ 수입 타입은 무지출 판정에서 제외
       int fixed = (_events[normalizedDate] ?? []).fold(
         0,
-        (sum, item) => sum + (item['amount'] as int),
+        (sum, item) =>
+            ((item['expenseType'] ?? '고정지출') as String).contains('수입')
+            ? sum
+            : sum + (item['amount'] as int),
       );
       if (fixed > 0) hasExpenseOnDay = true;
 
@@ -2116,6 +2454,19 @@ class _CalendarViewState extends State<CalendarView> {
       initialData?['settlement']?['friends'] ?? [],
     );
     bool isSettlementActive = initialData?['settlement'] != null;
+    bool isRoundingEnabled = initialData?['settlement']?['rounding'] ?? false;
+    int roundingUnit = initialData?['settlement']?['roundingUnit'] ?? 100;
+
+    // ✅ 1인당 정산 금액 계산
+    // 올림 켜져 있으면 선택한 단위로 올림 — 돈이 줄어들지 않음
+    // (100원 단위: 6,150 → 6,200 / 1,000원 단위: 15,600 → 16,000)
+    int calcSettlementAmount() {
+      int divided = (originalAmount / settlementPeople).round();
+      if (isRoundingEnabled && roundingUnit > 0) {
+        divided = ((divided + roundingUnit - 1) ~/ roundingUnit) * roundingUnit;
+      }
+      return divided;
+    }
 
     Widget buildPaymentItem(
       String name,
@@ -2300,8 +2651,17 @@ class _CalendarViewState extends State<CalendarView> {
       );
     }
 
-    void showSettlementPicker(StateSetter setModalState) {
-      showModalBottomSheet(
+    void showSettlementPicker(StateSetter setModalState) async {
+      // ✅ 저장 없이 닫으면(X·바깥 탭) 원래 상태로 되돌리기 위한 스냅샷
+      final String prevAmountText = amountController.text;
+      final int prevPeople = settlementPeople;
+      final List<String> prevFriends = List<String>.from(selectedFriends);
+      final bool prevActive = isSettlementActive;
+      final bool prevRounding = isRoundingEnabled;
+      final int prevUnit = roundingUnit;
+      bool savedByButton = false;
+
+      await showModalBottomSheet(
         context: context,
         backgroundColor: AppColors.background(context),
         isScrollControlled: true,
@@ -2380,8 +2740,7 @@ class _CalendarViewState extends State<CalendarView> {
                           setModalState(() {
                             settlementPeople = val;
                             if (originalAmount > 0) {
-                              int divided = (originalAmount / settlementPeople)
-                                  .round();
+                              int divided = calcSettlementAmount();
                               amountController.text = "${nf.format(divided)}원";
                             }
                           });
@@ -2504,6 +2863,114 @@ class _CalendarViewState extends State<CalendarView> {
                       ),
                     ),
                     const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        const Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                "금액 설정",
+                                style: TextStyle(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.bold,
+                                  color: AppColors.secondary,
+                                ),
+                              ),
+                              SizedBox(height: 4),
+                              Text(
+                                "1인당 금액을 깔끔한 단위로 올려요.",
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: AppColors.secondary,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        Switch.adaptive(
+                          value: isRoundingEnabled,
+                          activeColor: AppColors.primary(context),
+                          onChanged: (val) {
+                            setPickerState(() => isRoundingEnabled = val);
+                            if (originalAmount > 0) {
+                              setModalState(() {
+                                amountController.text =
+                                    "${nf.format(calcSettlementAmount())}원";
+                              });
+                            }
+                          },
+                        ),
+                      ],
+                    ),
+                    if (isRoundingEnabled) ...[
+                      const SizedBox(height: 8),
+                      Row(
+                        children: [100, 1000].map((unit) {
+                          final bool isSelected = roundingUnit == unit;
+                          final String label = unit == 100
+                              ? "100원 단위"
+                              : "1,000원 단위";
+                          return GestureDetector(
+                            onTap: () {
+                              setPickerState(() => roundingUnit = unit);
+                              if (originalAmount > 0) {
+                                setModalState(() {
+                                  amountController.text =
+                                      "${nf.format(calcSettlementAmount())}원";
+                                });
+                              }
+                            },
+                            child: Container(
+                              margin: const EdgeInsets.only(right: 8),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 8,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isSelected
+                                    ? AppColors.primary(
+                                        context,
+                                      ).withOpacity(0.15)
+                                    : AppColors.divider(context),
+                                borderRadius: BorderRadius.circular(25),
+                                border: Border.all(
+                                  color: isSelected
+                                      ? AppColors.primary(context)
+                                      : Colors.transparent,
+                                  width: 1,
+                                ),
+                              ),
+                              child: Text(
+                                label,
+                                style: TextStyle(
+                                  fontSize: 12,
+                                  color: isSelected
+                                      ? AppColors.primary(context)
+                                      : AppColors.secondary,
+                                  fontWeight: isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.normal,
+                                ),
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                      // const SizedBox(height: 5),
+                      // Text(
+                      //   roundingUnit == 100
+                      //       ? "예) 6,150원 → 6,200원"
+                      //       : "예) 15,600원 → 16,000원",
+                      //   style: const TextStyle(
+                      //     fontSize: 12,
+                      //     color: AppColors.secondary,
+                      //   ),
+                      // ),
+                    ],
+                    const SizedBox(height: 20),
                     SizedBox(
                       width: double.infinity,
                       height: 55,
@@ -2515,12 +2982,12 @@ class _CalendarViewState extends State<CalendarView> {
                           ),
                         ),
                         onPressed: () {
+                          savedByButton = true;
                           setModalState(() {
                             isSettlementActive = true;
 
                             if (originalAmount > 0) {
-                              int nPrice = (originalAmount / settlementPeople)
-                                  .round();
+                              int nPrice = calcSettlementAmount();
 
                               amountController.text = "${nf.format(nPrice)}원";
                             }
@@ -2537,6 +3004,7 @@ class _CalendarViewState extends State<CalendarView> {
                         ),
                       ),
                     ),
+                    const SizedBox(height: 20),
                   ],
                 ),
               ),
@@ -2544,6 +3012,18 @@ class _CalendarViewState extends State<CalendarView> {
           },
         ),
       );
+
+      // ✅ 저장 버튼 없이 닫혔으면 미리보기 전 상태로 복구
+      if (!savedByButton) {
+        settlementPeople = prevPeople;
+        selectedFriends = prevFriends;
+        isSettlementActive = prevActive;
+        isRoundingEnabled = prevRounding;
+        roundingUnit = prevUnit;
+        setModalState(() {
+          amountController.text = prevAmountText;
+        });
+      }
     }
 
     showModalBottomSheet(
@@ -2875,8 +3355,7 @@ class _CalendarViewState extends State<CalendarView> {
                                     originalAmount = parsed;
 
                                     int displayAmount = isSettlementActive
-                                        ? (originalAmount / settlementPeople)
-                                              .round()
+                                        ? calcSettlementAmount()
                                         : originalAmount;
 
                                     amountController.text =
@@ -2986,9 +3465,7 @@ class _CalendarViewState extends State<CalendarView> {
                                                       originalAmount = newTotal;
 
                                                       int nPrice =
-                                                          (originalAmount /
-                                                                  settlementPeople)
-                                                              .round();
+                                                          calcSettlementAmount();
 
                                                       amountController.text =
                                                           "${formatter.format(nPrice)}원";
@@ -3357,6 +3834,8 @@ class _CalendarViewState extends State<CalendarView> {
                                     isSettlement: isSettlementActive,
                                     sPeople: settlementPeople,
                                     sFriends: selectedFriends,
+                                    sRounding: isRoundingEnabled,
+                                    sRoundingUnit: roundingUnit,
                                   ),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: AppColors.primary(context),
@@ -3416,7 +3895,7 @@ class _CalendarViewState extends State<CalendarView> {
 
               if (isSameDay(date, _selectedDay)) {
                 currentRecords.add(data);
-                if (data['type'] == '수입') {
+                if (data['type'] == '수입' || data['type'] == '이체(수입)') {
                   income += (data['amount'] as int);
                 } else if (data['type'] == '지출' || data['type'] == '이체(지출)') {
                   expense += (data['amount'] as int);
@@ -3442,7 +3921,18 @@ class _CalendarViewState extends State<CalendarView> {
               int itemAmount = item['amount'] as int;
               String itemName = item['name'] as String;
               String expenseType = item['expenseType'] ?? '고정지출';
-              String icon = expenseType == '고정지출' ? '🗓️' : '📊';
+              // ✅ 고정/변동수입은 수입으로 표시
+              final bool isIncomeItem = expenseType.contains('수입');
+              String icon;
+              if (expenseType == '고정지출') {
+                icon = '🗓️';
+              } else if (expenseType == '변동지출') {
+                icon = '📊';
+              } else if (expenseType == '고정수입') {
+                icon = '💰';
+              } else {
+                icon = '💵';
+              }
 
               Map<String, dynamic> fixedData = {
                 'docId':
@@ -3450,11 +3940,15 @@ class _CalendarViewState extends State<CalendarView> {
                 'place': itemName,
                 'amount': itemAmount,
                 'category': {'name': expenseType, 'icon': icon},
-                'type': '지출',
+                'type': isIncomeItem ? '수입' : '지출',
                 'isFixed': true,
               };
               currentRecords.add(fixedData);
-              expense += itemAmount;
+              if (isIncomeItem) {
+                income += itemAmount;
+              } else {
+                expense += itemAmount;
+              }
             }
           }
 
@@ -3651,7 +4145,8 @@ class _CalendarViewState extends State<CalendarView> {
                     itemBuilder: (context, index) {
                       final item = currentRecords[index];
                       final bool isFixedItem = item['isFixed'] ?? false;
-                      final isIncome = item['type'] == '수입';
+                      final isIncome =
+                          item['type'] == '수입' || item['type'] == '이체(수입)';
 
                       final icon = (item['category'] is Map)
                           ? item['category']['icon']
@@ -4030,6 +4525,8 @@ class _CalendarViewState extends State<CalendarView> {
     bool isSettlement = false,
     int sPeople = 0,
     List<String> sFriends = const [],
+    bool sRounding = false,
+    int sRoundingUnit = 100,
   }) async {
     try {
       if (isDelete && docId != null) {
@@ -4072,6 +4569,8 @@ class _CalendarViewState extends State<CalendarView> {
         data['settlement'] = {
           'people': sPeople,
           'friends': sFriends,
+          'rounding': sRounding,
+          'roundingUnit': sRoundingUnit,
         };
       }
 
