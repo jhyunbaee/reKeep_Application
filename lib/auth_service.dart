@@ -1,4 +1,7 @@
 import 'dart:convert';
+import 'dart:math';
+import 'package:crypto/crypto.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
@@ -90,7 +93,83 @@ class AuthService {
     }
   }
 
-  // 애플 로그인 - Apple Developer Program 가입 후 활성화 예정
+  // 애플 로그인
+  Future<String> signInWithApple() async {
+    try {
+      final rawNonce = _generateNonce();
+      final nonce = _sha256ofString(rawNonce);
+
+      final appleCredential = await SignInWithApple.getAppleIDCredential(
+        scopes: [
+          AppleIDAuthorizationScopes.email,
+          AppleIDAuthorizationScopes.fullName,
+        ],
+        nonce: nonce,
+      );
+
+      // 디버그: 토큰이 제대로 왔는지 확인
+      print('=== APPLE DEBUG ===');
+      print('identityToken null? ${appleCredential.identityToken == null}');
+      print('authCode null? ${appleCredential.authorizationCode == null}');
+      print('rawNonce length: ${rawNonce.length}');
+
+      if (appleCredential.identityToken == null) {
+        return "애플 토큰을 받지 못했습니다 (identityToken null)";
+      }
+
+      final oauthCredential = OAuthProvider("apple.com").credential(
+        idToken: appleCredential.identityToken,
+        rawNonce: rawNonce,
+        accessToken: appleCredential.authorizationCode,
+      );
+
+      final userCredential = await _auth.signInWithCredential(oauthCredential);
+      final user = userCredential.user;
+      if (user == null) return "에러가 발생했습니다.";
+
+      // 신규 유저면 Firestore에 저장
+      final doc = await _firestore.collection('users').doc(user.uid).get();
+      if (!doc.exists) {
+        final displayName = [
+          appleCredential.familyName,
+          appleCredential.givenName,
+        ].where((e) => e != null && e.isNotEmpty).join('');
+        await _firestore.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': user.email ?? appleCredential.email ?? '',
+          'name': displayName.isNotEmpty ? displayName : '사용자',
+          'nickname': displayName.isNotEmpty ? displayName : '사용자',
+          'createdAt': DateTime.now(),
+        });
+      }
+      return "success";
+    } on SignInWithAppleAuthorizationException catch (e) {
+      // 사용자가 취소한 경우
+      if (e.code == AuthorizationErrorCode.canceled) {
+        return "cancelled";
+      }
+      return e.message;
+    } catch (e) {
+      return e.toString();
+    }
+  }
+
+  // 애플 로그인용 nonce 생성
+  String _generateNonce([int length = 32]) {
+    const charset =
+        '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-._';
+    final random = Random.secure();
+    return List.generate(
+      length,
+      (_) => charset[random.nextInt(charset.length)],
+    ).join();
+  }
+
+  String _sha256ofString(String input) {
+    final bytes = utf8.encode(input);
+    final digest = sha256.convert(bytes);
+    return digest.toString();
+  }
 
   Future<String> loginUser({
     required String email,

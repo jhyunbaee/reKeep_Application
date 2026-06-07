@@ -336,7 +336,26 @@ class _LoginState extends State<Login> {
                       ),
                     ),
                   ),
-                  // 애플 로그인 - Apple Developer Program 가입 후 활성화 예정
+                  // 애플
+                  const SizedBox(width: 16),
+                  GestureDetector(
+                    onTap: _handleAppleSignIn,
+                    child: Container(
+                      width: 52,
+                      height: 52,
+                      decoration: const BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: Colors.black,
+                      ),
+                      child: const Center(
+                        child: Icon(
+                          Icons.apple,
+                          color: Colors.white,
+                          size: 28,
+                        ),
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ],
@@ -580,7 +599,21 @@ class _LoginState extends State<Login> {
     }
   }
 
-  // _handleAppleSignIn - Apple Developer Program 가입 후 활성화 예정
+  Future<void> _handleAppleSignIn() async {
+    final result = await AuthService().signInWithApple();
+    if (!mounted) return;
+    if (result == "success") {
+      Navigator.pushAndRemoveUntil(
+        context,
+        MaterialPageRoute(builder: (context) => const Home()),
+        (route) => false,
+      );
+    } else if (result != "cancelled") {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text("애플 로그인 실패: $result")),
+      );
+    }
+  }
 
   void _checkNicknameDuplicate() async {
     String nickname = _nicknameController.text.trim();
